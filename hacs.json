@@ -1,5 +1,5 @@
 {
-    "name": "WRM-Systems Home Assistant Integration",
+    "name": "WRM-Systems",
     "domains": ["wrm-systems"],
     "country": "FI",
     "homeassistant": "2024.12.0",
