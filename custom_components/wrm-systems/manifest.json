@@ -1,0 +1,8 @@
+{
+    "domain": "wrm-systems",
+    "name": "WRM-Systems",
+    "version": "0.0.1",
+    "documentation": "https://github.com/taskinen/wrm-systems",
+    "requirements": [],
+    "codeowners": ["@taskinen"]
+}
