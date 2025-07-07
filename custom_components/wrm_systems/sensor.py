@@ -34,6 +34,8 @@ async def async_setup_entry(
         WRMSystemsWaterMeterSensor(coordinator, config_entry),
         WRMSystemsHourlyUsageSensor(coordinator, config_entry),
         WRMSystemsDailyUsageSensor(coordinator, config_entry),
+        WRMSystemsWeeklyUsageSensor(coordinator, config_entry),
+        WRMSystemsMonthlyUsageSensor(coordinator, config_entry),
     ]
 
     async_add_entities(sensors)
@@ -89,6 +91,48 @@ class WRMSystemsWaterMeterSensor(CoordinatorEntity, SensorEntity):
         }
 
 
+class WRMSystemsMonthlyUsageSensor(CoordinatorEntity, SensorEntity):
+    """Representation of monthly water usage sensor."""
+
+    def __init__(
+        self,
+        coordinator: WRMSystemsDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._attr_name = "Monthly Water Usage"
+        self._attr_unique_id = f"{config_entry.entry_id}_monthly_usage"
+        self._attr_device_class = SensorDeviceClass.WATER
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
+        self._attr_suggested_display_precision = 3
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the monthly usage."""
+        if self.coordinator.data is None:
+            return None
+
+        usage_data = self.coordinator.data.get("usage_data")
+        if usage_data is None:
+            return None
+        
+        return usage_data.get("monthly_usage", 0.0)
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device information."""
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": "WRM-Systems Water Meter",
+            "manufacturer": "WRM-Systems",
+            "model": self.coordinator.data.get("model") if self.coordinator.data else None,
+            "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
+        }
+
+
 class WRMSystemsHourlyUsageSensor(CoordinatorEntity, SensorEntity):
     """Representation of hourly water usage sensor."""
 
@@ -106,7 +150,6 @@ class WRMSystemsHourlyUsageSensor(CoordinatorEntity, SensorEntity):
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
         self._attr_suggested_display_precision = 3
-        self._previous_reading = None
 
     @property
     def native_value(self) -> float | None:
@@ -114,18 +157,53 @@ class WRMSystemsHourlyUsageSensor(CoordinatorEntity, SensorEntity):
         if self.coordinator.data is None:
             return None
 
-        current_reading = self.coordinator.data.get("value")
-        if current_reading is None:
+        usage_data = self.coordinator.data.get("usage_data")
+        if usage_data is None:
+            return None
+        
+        return usage_data.get("hourly_usage", 0.0)
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device information."""
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": "WRM-Systems Water Meter",
+            "manufacturer": "WRM-Systems",
+            "model": self.coordinator.data.get("model") if self.coordinator.data else None,
+            "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
+        }
+
+
+class WRMSystemsMonthlyUsageSensor(CoordinatorEntity, SensorEntity):
+    """Representation of monthly water usage sensor."""
+
+    def __init__(
+        self,
+        coordinator: WRMSystemsDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._attr_name = "Monthly Water Usage"
+        self._attr_unique_id = f"{config_entry.entry_id}_monthly_usage"
+        self._attr_device_class = SensorDeviceClass.WATER
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
+        self._attr_suggested_display_precision = 3
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the monthly usage."""
+        if self.coordinator.data is None:
             return None
 
-        if self._previous_reading is None:
-            self._previous_reading = current_reading
-            return 0.0
-
-        usage = current_reading - self._previous_reading
-        self._previous_reading = current_reading
+        usage_data = self.coordinator.data.get("usage_data")
+        if usage_data is None:
+            return None
         
-        return max(0.0, usage)
+        return usage_data.get("monthly_usage", 0.0)
 
     @property
     def device_info(self) -> dict[str, Any]:
@@ -156,8 +234,6 @@ class WRMSystemsDailyUsageSensor(CoordinatorEntity, SensorEntity):
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
         self._attr_suggested_display_precision = 3
-        self._daily_start_reading = None
-        self._current_day = None
 
     @property
     def native_value(self) -> float | None:
@@ -165,23 +241,137 @@ class WRMSystemsDailyUsageSensor(CoordinatorEntity, SensorEntity):
         if self.coordinator.data is None:
             return None
 
-        current_reading = self.coordinator.data.get("value")
-        if current_reading is None:
+        usage_data = self.coordinator.data.get("usage_data")
+        if usage_data is None:
+            return None
+        
+        return usage_data.get("daily_usage", 0.0)
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device information."""
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": "WRM-Systems Water Meter",
+            "manufacturer": "WRM-Systems",
+            "model": self.coordinator.data.get("model") if self.coordinator.data else None,
+            "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
+        }
+
+
+class WRMSystemsMonthlyUsageSensor(CoordinatorEntity, SensorEntity):
+    """Representation of monthly water usage sensor."""
+
+    def __init__(
+        self,
+        coordinator: WRMSystemsDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._attr_name = "Monthly Water Usage"
+        self._attr_unique_id = f"{config_entry.entry_id}_monthly_usage"
+        self._attr_device_class = SensorDeviceClass.WATER
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
+        self._attr_suggested_display_precision = 3
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the monthly usage."""
+        if self.coordinator.data is None:
             return None
 
-        current_day = datetime.now().date()
+        usage_data = self.coordinator.data.get("usage_data")
+        if usage_data is None:
+            return None
         
-        if self._current_day != current_day:
-            self._daily_start_reading = current_reading
-            self._current_day = current_day
-            return 0.0
+        return usage_data.get("monthly_usage", 0.0)
 
-        if self._daily_start_reading is None:
-            self._daily_start_reading = current_reading
-            return 0.0
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device information."""
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": "WRM-Systems Water Meter",
+            "manufacturer": "WRM-Systems",
+            "model": self.coordinator.data.get("model") if self.coordinator.data else None,
+            "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
+        }
 
-        usage = current_reading - self._daily_start_reading
-        return max(0.0, usage)
+
+class WRMSystemsWeeklyUsageSensor(CoordinatorEntity, SensorEntity):
+    """Representation of weekly water usage sensor."""
+
+    def __init__(
+        self,
+        coordinator: WRMSystemsDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._attr_name = "Weekly Water Usage"
+        self._attr_unique_id = f"{config_entry.entry_id}_weekly_usage"
+        self._attr_device_class = SensorDeviceClass.WATER
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
+        self._attr_suggested_display_precision = 3
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the weekly usage."""
+        if self.coordinator.data is None:
+            return None
+
+        usage_data = self.coordinator.data.get("usage_data")
+        if usage_data is None:
+            return None
+        
+        return usage_data.get("weekly_usage", 0.0)
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device information."""
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": "WRM-Systems Water Meter",
+            "manufacturer": "WRM-Systems",
+            "model": self.coordinator.data.get("model") if self.coordinator.data else None,
+            "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
+        }
+
+
+class WRMSystemsMonthlyUsageSensor(CoordinatorEntity, SensorEntity):
+    """Representation of monthly water usage sensor."""
+
+    def __init__(
+        self,
+        coordinator: WRMSystemsDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._attr_name = "Monthly Water Usage"
+        self._attr_unique_id = f"{config_entry.entry_id}_monthly_usage"
+        self._attr_device_class = SensorDeviceClass.WATER
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
+        self._attr_suggested_display_precision = 3
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the monthly usage."""
+        if self.coordinator.data is None:
+            return None
+
+        usage_data = self.coordinator.data.get("usage_data")
+        if usage_data is None:
+            return None
+        
+        return usage_data.get("monthly_usage", 0.0)
 
     @property
     def device_info(self) -> dict[str, Any]:
