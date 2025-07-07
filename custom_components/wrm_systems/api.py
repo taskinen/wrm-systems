@@ -131,7 +131,7 @@ class WRMSystemsAPIClient:
                 return {
                     "readings": [], 
                     "model": data.get("model"), 
-                    "serialNumber": data.get("serialNumber"), 
+                    "serial_number": data.get("serialNumber"), 
                     "unit": data.get("unit")
                 }
             

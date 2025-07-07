@@ -16,13 +16,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, MAX_DATA_AGE_HOURS
 from .coordinator import WRMSystemsDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
-
-# Constants for availability check
-MAX_DATA_AGE_HOURS = 48  # Maximum age in hours before considering data stale
 
 
 class WRMSystemsBaseSensor(CoordinatorEntity, SensorEntity):
@@ -46,18 +43,22 @@ class WRMSystemsBaseSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
-        if self.coordinator.data is None:
+        try:
+            if self.coordinator.data is None:
+                return False
+            
+            # Check if data is stale (considering API delay)
+            timestamp = self.coordinator._safe_get_timestamp(self.coordinator.data)
+            if timestamp is None:
+                return False
+            
+            # Use consistent timezone-aware timestamp comparison
+            current_timestamp = datetime.now(timezone.utc).timestamp()
+            data_age_hours = (current_timestamp - timestamp) / 3600
+            return data_age_hours <= MAX_DATA_AGE_HOURS
+        except (KeyError, TypeError, ValueError) as err:
+            _LOGGER.debug("Error checking availability: %s", err)
             return False
-        
-        # Check if data is stale (considering API delay)
-        timestamp = self.coordinator.data.get("timestamp")
-        if timestamp is None:
-            return False
-        
-        # Use consistent timezone-aware timestamp comparison
-        current_timestamp = datetime.now(timezone.utc).timestamp()
-        data_age_hours = (current_timestamp - timestamp) / 3600
-        return data_age_hours <= MAX_DATA_AGE_HOURS
 
     @property
     def device_info(self) -> dict[str, Any]:
@@ -139,9 +140,17 @@ class WRMSystemsWaterMeterSensor(WRMSystemsBaseSensor):
     @property
     def native_value(self) -> float | None:
         """Return the state of the sensor."""
-        if self.coordinator.data is None or not self.available:
+        try:
+            if self.coordinator.data is None or not self.available:
+                return None
+            
+            value = self.coordinator.data.get("value")
+            if isinstance(value, (int, float)) and value >= 0:
+                return float(value)
             return None
-        return self.coordinator.data.get("value")
+        except (KeyError, TypeError, ValueError) as err:
+            _LOGGER.debug("Error getting sensor value: %s", err)
+            return None
 
 
 class WRMSystemsUsageBaseSensor(WRMSystemsBaseSensor):
@@ -171,14 +180,21 @@ class WRMSystemsUsageBaseSensor(WRMSystemsBaseSensor):
     @property
     def native_value(self) -> float | None:
         """Return the usage value."""
-        if self.coordinator.data is None or not self.available:
-            return None
+        try:
+            if self.coordinator.data is None or not self.available:
+                return None
 
-        usage_data = self.coordinator.data.get("usage_data")
-        if usage_data is None:
-            return None
-        
-        return usage_data.get(self._usage_key, 0.0)
+            usage_data = self.coordinator.data.get("usage_data")
+            if usage_data is None:
+                return None
+            
+            value = usage_data.get(self._usage_key, 0.0)
+            if isinstance(value, (int, float)) and value >= 0:
+                return float(value)
+            return 0.0
+        except (KeyError, TypeError, ValueError) as err:
+            _LOGGER.debug("Error getting usage value for %s: %s", self._usage_key, err)
+            return 0.0
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

@@ -16,13 +16,24 @@ MAX_DATA_AGE_HOURS = 48
 HISTORICAL_DATA_DAYS = 30
 BACKFILL_DAYS = 7
 
-# Add validation constants
+# Validation constants
 MIN_BACKFILL_DAYS = 1
 MAX_BACKFILL_DAYS = 30
 MIN_HISTORICAL_READINGS = 10
+MAX_HISTORICAL_READINGS = 1000
+MIN_HISTORICAL_DATA_DAYS = 1
+MAX_HISTORICAL_DATA_DAYS = 90
 
 # API request configuration
-MAX_HISTORICAL_READINGS = 1000
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
 RETRY_DELAY = 2
+
+# Validation functions
+def validate_scan_interval(interval: int) -> bool:
+    """Validate scan interval is within acceptable range."""
+    return isinstance(interval, int) and MIN_SCAN_INTERVAL <= interval <= MAX_SCAN_INTERVAL
+
+def validate_historical_days(days: int) -> bool:
+    """Validate historical data days is within acceptable range."""
+    return isinstance(days, int) and MIN_HISTORICAL_DATA_DAYS <= days <= MAX_HISTORICAL_DATA_DAYS

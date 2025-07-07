@@ -12,7 +12,14 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import InvalidAuth, APIError, WRMSystemsAPIClient
-from .const import DOMAIN, MIN_SCAN_INTERVAL, MAX_SCAN_INTERVAL, CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+from .const import (
+    DOMAIN, 
+    CONF_SCAN_INTERVAL, 
+    DEFAULT_SCAN_INTERVAL, 
+    MIN_SCAN_INTERVAL,
+    MAX_SCAN_INTERVAL,
+    validate_scan_interval
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,8 +56,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Validate scan interval
         if CONF_SCAN_INTERVAL in user_input:
             scan_interval = user_input[CONF_SCAN_INTERVAL]
-            if not isinstance(scan_interval, int) or scan_interval < MIN_SCAN_INTERVAL or scan_interval > MAX_SCAN_INTERVAL:
-                errors[CONF_SCAN_INTERVAL] = f"scan_interval_invalid"
+            if not validate_scan_interval(scan_interval):
+                errors[CONF_SCAN_INTERVAL] = "scan_interval_invalid"
 
         if not errors:
             try:

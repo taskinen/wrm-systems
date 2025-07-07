@@ -64,13 +64,54 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(seconds=scan_interval),
         )
 
+    def _validate_reading(self, reading: dict[str, Any]) -> bool:
+        """Validate a single reading has required fields and valid data."""
+        try:
+            required_fields = ["timestamp", "value"]
+            if not all(field in reading for field in required_fields):
+                return False
+            
+            # Validate timestamp is reasonable (not too old or in future)
+            timestamp = reading["timestamp"]
+            if not isinstance(timestamp, (int, float)):
+                return False
+                
+            current_time = datetime.now(timezone.utc).timestamp()
+            # Allow readings up to 90 days old, reject future readings
+            if timestamp < (current_time - 90 * 24 * 3600) or timestamp > current_time:
+                return False
+            
+            # Validate value is a reasonable number (positive, not extreme)
+            value = reading["value"]
+            if not isinstance(value, (int, float)) or value < 0 or value > 1e9:
+                return False
+                
+            return True
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    def _safe_get_timestamp(self, data: dict[str, Any] | None) -> int | None:
+        """Safely extract timestamp from data with validation."""
+        try:
+            if not data:
+                return None
+            timestamp = data.get("timestamp")
+            if timestamp is None:
+                return None
+            if isinstance(timestamp, (int, float)) and timestamp > 0:
+                return int(timestamp)
+            return None
+        except (TypeError, ValueError):
+            return None
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Update data via library."""
         try:
             # Load stored data on first run (protected by lock)
             if not self._historical_data:
                 async with self._storage_lock:
-                    if not self._historical_data:  # Double-check pattern
+                    # Double-check pattern: verify again inside the lock
+                    if not self._historical_data:
                         await self._load_historical_data()
             
             # Get new readings since last update
@@ -83,6 +124,9 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             # Periodically clean up storage (every 10th update)
             if hasattr(self, '_update_count'):
                 self._update_count += 1
+                # Reset counter to prevent overflow on long-running systems
+                if self._update_count > 1000:
+                    self._update_count = 1
             else:
                 self._update_count = 1
                 
@@ -172,39 +216,51 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         async with self._storage_lock:
             existing_readings = self._historical_data.get("readings", [])
             
-            # More efficient: use set for deduplication based on timestamp
-            existing_by_timestamp = {r["timestamp"]: r for r in existing_readings}
+            # More efficient: use set for O(1) lookup of existing timestamps
+            existing_timestamps = {r["timestamp"] for r in existing_readings}
             
-            # Add new readings, overwriting duplicates
-            for reading in new_readings:
-                existing_by_timestamp[reading["timestamp"]] = reading
-            
-            # Sort and filter in one pass
-            cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
-            recent_readings = [
-                r for r in existing_by_timestamp.values() 
-                if r["timestamp"] >= cutoff_timestamp
+            # Only add truly new readings that pass validation
+            new_unique_readings = [
+                reading for reading in new_readings 
+                if reading["timestamp"] not in existing_timestamps and self._validate_reading(reading)
             ]
-            recent_readings.sort(key=lambda x: x["timestamp"])
             
-            # Apply maximum limit
-            if len(recent_readings) > MAX_HISTORICAL_READINGS:
-                recent_readings = recent_readings[-MAX_HISTORICAL_READINGS:]
-                _LOGGER.info("Trimmed historical data to %d readings", MAX_HISTORICAL_READINGS)
+            if len(new_readings) != len(new_unique_readings):
+                _LOGGER.warning("Filtered out %d invalid readings", len(new_readings) - len(new_unique_readings))
+            
+            # Combine and sort only if we have new readings
+            if new_unique_readings:
+                combined_readings = existing_readings + new_unique_readings
+                combined_readings.sort(key=lambda x: x["timestamp"])
+                
+                # Apply time-based filter
+                cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
+                recent_readings = [
+                    r for r in combined_readings 
+                    if r["timestamp"] >= cutoff_timestamp
+                ]
+                
+                # Apply maximum limit
+                if len(recent_readings) > MAX_HISTORICAL_READINGS:
+                    recent_readings = recent_readings[-MAX_HISTORICAL_READINGS:]
+                    _LOGGER.info("Trimmed historical data to %d readings", MAX_HISTORICAL_READINGS)
+                
+                # Update data
+                self._historical_data["readings"] = recent_readings
+                if recent_readings:
+                    self._last_reading_timestamp = recent_readings[-1]["timestamp"]
+                    self._historical_data["last_reading_timestamp"] = self._last_reading_timestamp
+                
+                await self.store.async_save(self._historical_data)
+                _LOGGER.debug("Updated historical data with %d new readings", len(new_unique_readings))
+            else:
+                _LOGGER.debug("No new readings to add")
             
             # Ensure minimum readings for meaningful calculations
-            if len(recent_readings) > 0 and len(recent_readings) < MIN_HISTORICAL_READINGS:
+            current_readings = self._historical_data.get("readings", [])
+            if len(current_readings) > 0 and len(current_readings) < MIN_HISTORICAL_READINGS:
                 _LOGGER.debug("Historical data has only %d readings (minimum recommended: %d)", 
-                             len(recent_readings), MIN_HISTORICAL_READINGS)
-            
-            # Update data
-            self._historical_data["readings"] = recent_readings
-            if recent_readings:
-                self._last_reading_timestamp = recent_readings[-1]["timestamp"]
-                self._historical_data["last_reading_timestamp"] = self._last_reading_timestamp
-            
-            await self.store.async_save(self._historical_data)
-            _LOGGER.debug("Updated historical data with %d readings", len(recent_readings))
+                             len(current_readings), MIN_HISTORICAL_READINGS)
     
     def _calculate_usage_metrics(self) -> dict[str, Any]:
         """Calculate usage metrics from historical data."""
