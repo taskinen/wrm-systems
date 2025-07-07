@@ -18,7 +18,6 @@ from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 1
-STORAGE_KEY = "wrm_systems_data"
 
 
 class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
@@ -36,8 +35,9 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             token=config_entry.data[CONF_TOKEN],
         )
         
-        # Initialize storage for historical data
-        self.store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        # Initialize storage for historical data (unique per config entry)
+        storage_key = f"wrm_systems_data_{config_entry.entry_id}"
+        self.store = Store(hass, STORAGE_VERSION, storage_key)
         self._historical_data: dict[str, Any] = {}
         self._last_reading_timestamp: int | None = None
 
@@ -150,10 +150,10 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         # Get latest reading
         latest_reading = max(readings, key=lambda x: x["timestamp"])
         
-        # Calculate hourly usage (last hour)
-        hour_ago = current_timestamp - 3600
-        hourly_readings = [r for r in readings if r["timestamp"] >= hour_ago]
-        hourly_usage = self._calculate_usage_for_period(hourly_readings)
+        # Calculate hourly usage (average based on recent readings)
+        # Since API has 6-24 hour delay, we can't get true "last hour" data
+        # Instead, calculate average hourly usage from recent readings
+        hourly_usage = self._calculate_average_hourly_usage(readings)
         
         # Calculate daily usage (since start of day)
         start_of_day = int(current_time.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
@@ -176,22 +176,94 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             "weekly_usage": weekly_usage,
             "monthly_usage": monthly_usage,
             "latest_reading": latest_reading,
+            "data_age_hours": (current_timestamp - latest_reading.get("timestamp", 0)) / 3600,
         }
     
     def _calculate_usage_for_period(self, readings: list[dict[str, Any]]) -> float:
         """Calculate usage for a specific period."""
-        if len(readings) < 2:
+        if not readings or len(readings) < 2:
             return 0.0
         
-        # Sort by timestamp
-        sorted_readings = sorted(readings, key=lambda x: x["timestamp"])
+        try:
+            # Sort by timestamp and validate data
+            sorted_readings = sorted(readings, key=lambda x: x.get("timestamp", 0))
+            
+            # Filter out invalid readings
+            valid_readings = [
+                r for r in sorted_readings 
+                if r.get("timestamp") and r.get("value") is not None
+            ]
+            
+            if len(valid_readings) < 2:
+                return 0.0
+            
+            # Calculate usage as difference between first and last reading
+            first_reading = valid_readings[0]
+            last_reading = valid_readings[-1]
+            
+            first_value = first_reading.get("value", 0)
+            last_value = last_reading.get("value", 0)
+            
+            # Ensure values are numeric
+            if not isinstance(first_value, (int, float)) or not isinstance(last_value, (int, float)):
+                _LOGGER.warning("Invalid reading values: first=%s, last=%s", first_value, last_value)
+                return 0.0
+            
+            usage = last_value - first_value
+            return max(0, usage)  # Ensure non-negative usage
+            
+        except (KeyError, TypeError, ValueError) as err:
+            _LOGGER.warning("Error calculating usage for period: %s", err)
+            return 0.0
+    
+    def _calculate_average_hourly_usage(self, readings: list[dict[str, Any]]) -> float:
+        """Calculate average hourly usage from recent readings (accounting for API delay)."""
+        if not readings or len(readings) < 2:
+            return 0.0
         
-        # Calculate usage as difference between first and last reading
-        first_reading = sorted_readings[0]
-        last_reading = sorted_readings[-1]
-        
-        usage = last_reading["value"] - first_reading["value"]
-        return max(0, usage)  # Ensure non-negative usage
+        try:
+            # Sort by timestamp and validate data
+            sorted_readings = sorted(readings, key=lambda x: x.get("timestamp", 0))
+            
+            # Filter out invalid readings
+            valid_readings = [
+                r for r in sorted_readings 
+                if r.get("timestamp") and r.get("value") is not None
+            ]
+            
+            if len(valid_readings) < 2:
+                return 0.0
+            
+            # Get the most recent 24 hours of readings (accounting for delay)
+            current_time = datetime.now().timestamp()
+            # Look back 48 hours to account for potential delays
+            cutoff_timestamp = current_time - (48 * 3600)
+            recent_readings = [r for r in valid_readings if r["timestamp"] >= cutoff_timestamp]
+            
+            if len(recent_readings) < 2:
+                # If no recent readings, use the last available readings
+                recent_readings = valid_readings[-10:]  # Last 10 readings
+            
+            if len(recent_readings) < 2:
+                return 0.0
+            
+            # Calculate total usage and time span
+            first_reading = recent_readings[0]
+            last_reading = recent_readings[-1]
+            
+            total_usage = last_reading["value"] - first_reading["value"]
+            time_span_hours = (last_reading["timestamp"] - first_reading["timestamp"]) / 3600
+            
+            if time_span_hours <= 0:
+                return 0.0
+            
+            # Calculate average hourly usage
+            hourly_usage = total_usage / time_span_hours
+            return max(0, hourly_usage)  # Ensure non-negative
+            
+        except (KeyError, TypeError, ValueError) as err:
+            _LOGGER.warning("Error calculating average hourly usage: %s", err)
+            return 0.0
     
     async def async_get_usage_history(self, days: int = 7) -> list[dict[str, Any]]:
         """Get usage history for the specified number of days."""

@@ -46,6 +46,34 @@ class WRMSystemsAPIClient:
 
                 data = await response.json()
                 _LOGGER.debug("API response: %s", data)
+                
+                # Validate response structure
+                if not isinstance(data, dict):
+                    raise APIError("Invalid API response format: expected dict")
+                
+                if "readings" not in data:
+                    raise APIError("Invalid API response: missing 'readings' field")
+                
+                if not isinstance(data["readings"], list):
+                    raise APIError("Invalid API response: 'readings' must be a list")
+                
+                # Check for empty readings array
+                if not data["readings"]:
+                    _LOGGER.info("API returned empty readings array")
+                    # Return empty data structure instead of raising an error
+                    return {"readings": [], "model": data.get("model"), "serialNumber": data.get("serialNumber"), "unit": data.get("unit")}
+                
+                # Validate readings format
+                for i, reading in enumerate(data["readings"]):
+                    if not isinstance(reading, list) or len(reading) != 2:
+                        raise APIError(f"Invalid reading format at index {i}: expected [timestamp, value]")
+                    
+                    if not isinstance(reading[0], (int, float)):
+                        raise APIError(f"Invalid timestamp format at index {i}: expected number")
+                    
+                    if not isinstance(reading[1], (int, float)):
+                        raise APIError(f"Invalid value format at index {i}: expected number")
+                
                 return data
 
         except aiohttp.ClientError as err:

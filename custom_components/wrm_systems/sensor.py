@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -60,9 +60,23 @@ class WRMSystemsWaterMeterSensor(CoordinatorEntity, SensorEntity):
         self._attr_suggested_display_precision = 3
 
     @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        if self.coordinator.data is None:
+            return False
+        
+        # Check if data is stale (older than 48 hours to account for API delay)
+        timestamp = self.coordinator.data.get("timestamp")
+        if timestamp is None:
+            return False
+        
+        data_age = datetime.now().timestamp() - timestamp
+        return data_age <= 48 * 3600  # 48 hours in seconds
+    
+    @property
     def native_value(self) -> float | None:
         """Return the state of the sensor."""
-        if self.coordinator.data is None:
+        if self.coordinator.data is None or not self.available:
             return None
         return self.coordinator.data.get("value")
 
@@ -72,12 +86,19 @@ class WRMSystemsWaterMeterSensor(CoordinatorEntity, SensorEntity):
         if self.coordinator.data is None:
             return {}
         
-        return {
+        attributes = {
             "model": self.coordinator.data.get("model"),
             "serial_number": self.coordinator.data.get("serial_number"),
             "unit": self.coordinator.data.get("unit"),
             "last_reading": self.coordinator.data.get("timestamp"),
         }
+        
+        # Add data freshness information
+        usage_data = self.coordinator.data.get("usage_data", {})
+        if "data_age_hours" in usage_data:
+            attributes["data_age_hours"] = round(usage_data["data_age_hours"], 1)
+            
+        return attributes
 
     @property
     def device_info(self) -> dict[str, Any]:
@@ -105,14 +126,28 @@ class WRMSystemsMonthlyUsageSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = "Monthly Water Usage"
         self._attr_unique_id = f"{config_entry.entry_id}_monthly_usage"
         self._attr_device_class = SensorDeviceClass.WATER
-        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_state_class = SensorStateClass.TOTAL
         self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
         self._attr_suggested_display_precision = 3
 
     @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        if self.coordinator.data is None:
+            return False
+        
+        # Check if data is stale (older than 48 hours to account for API delay)
+        timestamp = self.coordinator.data.get("timestamp")
+        if timestamp is None:
+            return False
+        
+        data_age = datetime.now().timestamp() - timestamp
+        return data_age <= 48 * 3600  # 48 hours in seconds
+    
+    @property
     def native_value(self) -> float | None:
         """Return the monthly usage."""
-        if self.coordinator.data is None:
+        if self.coordinator.data is None or not self.available:
             return None
 
         usage_data = self.coordinator.data.get("usage_data")
@@ -147,14 +182,28 @@ class WRMSystemsHourlyUsageSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = "Hourly Water Usage"
         self._attr_unique_id = f"{config_entry.entry_id}_hourly_usage"
         self._attr_device_class = SensorDeviceClass.WATER
-        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_state_class = SensorStateClass.TOTAL
         self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
         self._attr_suggested_display_precision = 3
 
     @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        if self.coordinator.data is None:
+            return False
+        
+        # Check if data is stale (older than 48 hours to account for API delay)
+        timestamp = self.coordinator.data.get("timestamp")
+        if timestamp is None:
+            return False
+        
+        data_age = datetime.now().timestamp() - timestamp
+        return data_age <= 48 * 3600  # 48 hours in seconds
+    
+    @property
     def native_value(self) -> float | None:
         """Return the hourly usage."""
-        if self.coordinator.data is None:
+        if self.coordinator.data is None or not self.available:
             return None
 
         usage_data = self.coordinator.data.get("usage_data")
@@ -189,14 +238,28 @@ class WRMSystemsDailyUsageSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = "Daily Water Usage"
         self._attr_unique_id = f"{config_entry.entry_id}_daily_usage"
         self._attr_device_class = SensorDeviceClass.WATER
-        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_state_class = SensorStateClass.TOTAL
         self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
         self._attr_suggested_display_precision = 3
 
     @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        if self.coordinator.data is None:
+            return False
+        
+        # Check if data is stale (older than 48 hours to account for API delay)
+        timestamp = self.coordinator.data.get("timestamp")
+        if timestamp is None:
+            return False
+        
+        data_age = datetime.now().timestamp() - timestamp
+        return data_age <= 48 * 3600  # 48 hours in seconds
+    
+    @property
     def native_value(self) -> float | None:
         """Return the daily usage."""
-        if self.coordinator.data is None:
+        if self.coordinator.data is None or not self.available:
             return None
 
         usage_data = self.coordinator.data.get("usage_data")
@@ -231,14 +294,28 @@ class WRMSystemsWeeklyUsageSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = "Weekly Water Usage"
         self._attr_unique_id = f"{config_entry.entry_id}_weekly_usage"
         self._attr_device_class = SensorDeviceClass.WATER
-        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_state_class = SensorStateClass.TOTAL
         self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
         self._attr_suggested_display_precision = 3
 
     @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        if self.coordinator.data is None:
+            return False
+        
+        # Check if data is stale (older than 48 hours to account for API delay)
+        timestamp = self.coordinator.data.get("timestamp")
+        if timestamp is None:
+            return False
+        
+        data_age = datetime.now().timestamp() - timestamp
+        return data_age <= 48 * 3600  # 48 hours in seconds
+    
+    @property
     def native_value(self) -> float | None:
         """Return the weekly usage."""
-        if self.coordinator.data is None:
+        if self.coordinator.data is None or not self.available:
             return None
 
         usage_data = self.coordinator.data.get("usage_data")

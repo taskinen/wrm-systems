@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -12,6 +11,7 @@ from homeassistant.const import CONF_TOKEN
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .api import InvalidAuth, APIError, WRMSystemsAPIClient
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await self._test_credentials(user_input[CONF_TOKEN])
         except InvalidAuth:
             errors["base"] = "invalid_auth"
-        except CannotConnect:
+        except APIError:
             errors["base"] = "cannot_connect"
         except Exception:  # pylint: disable=broad-except
             _LOGGER.exception("Unexpected exception")
@@ -58,28 +58,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def _test_credentials(self, token: str) -> None:
         """Validate the user input allows us to connect."""
         session = async_get_clientsession(self.hass)
+        api_client = WRMSystemsAPIClient(session, token)
         
-        headers = {"Authorization": f"Bearer {token}"}
-        url = "https://wmd.wrm-systems.fi/api/watermeter"
-        
-        try:
-            async with session.get(url, headers=headers) as response:
-                if response.status == 401:
-                    raise InvalidAuth
-                elif response.status != 200:
-                    raise CannotConnect
-                
-                data = await response.json()
-                if not data or "readings" not in data:
-                    raise InvalidAuth
-                    
-        except aiohttp.ClientError as err:
-            raise CannotConnect from err
+        # Test connection using the API client
+        await api_client.async_get_readings()
 
-
-class CannotConnect(Exception):
-    """Error to indicate we cannot connect."""
-
-
-class InvalidAuth(Exception):
-    """Error to indicate there is invalid auth."""
