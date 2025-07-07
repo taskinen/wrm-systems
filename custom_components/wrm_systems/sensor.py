@@ -73,8 +73,9 @@ class WRMSystemsWaterMeterSensor(CoordinatorEntity, SensorEntity):
         if timestamp is None:
             return False
         
-        # Fix: Use timezone-aware datetime
-        data_age = datetime.now(timezone.utc).timestamp() - timestamp
+        # Fix: Use timezone-aware datetime and compare timestamps directly
+        current_timestamp = datetime.now(timezone.utc).timestamp()
+        data_age = current_timestamp - timestamp
         return data_age <= 48 * 3600  # 48 hours in seconds
     
     @property
@@ -155,8 +156,9 @@ class WRMSystemsUsageBaseSensor(CoordinatorEntity, SensorEntity):
         if timestamp is None:
             return False
         
-        # Fix: Use timezone-aware datetime
-        data_age = datetime.now(timezone.utc).timestamp() - timestamp
+        # Fix: Use timezone-aware datetime and compare timestamps directly
+        current_timestamp = datetime.now(timezone.utc).timestamp()
+        data_age = current_timestamp - timestamp
         return data_age <= 48 * 3600  # 48 hours in seconds
     
     @property

@@ -23,6 +23,20 @@ class WRMSystemsAPIClient:
         self._token = token
         self._headers = {"Authorization": f"Bearer {token}"}
 
+    def _sanitize_for_logging(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Remove sensitive data from logs."""
+        if not isinstance(data, dict):
+            return data
+        
+        sanitized = data.copy()
+        # Remove any potential sensitive fields
+        sensitive_fields = ["token", "auth", "password", "key"]
+        for field in sensitive_fields:
+            if field in sanitized:
+                sanitized[field] = "***"
+        
+        return sanitized
+
     async def _make_request_with_retry(
         self, url: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -53,7 +67,7 @@ class WRMSystemsAPIClient:
                     except Exception as err:
                         raise APIError(f"Failed to parse JSON response: {err}") from err
                     
-                    _LOGGER.debug("API response (attempt %d): %s", attempt + 1, data)
+                    _LOGGER.debug("API response (attempt %d): %s", attempt + 1, self._sanitize_for_logging(data))
                     return data
 
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
@@ -145,7 +159,14 @@ class WRMSystemsAPIClient:
         data = await self.async_get_readings()
         
         if not data or "readings" not in data or not data["readings"]:
-            raise APIError("No readings available from API response")
+            # Return None values instead of raising error for better UX
+            return {
+                "model": data.get("model") if data else None,
+                "serial_number": data.get("serialNumber") if data else None,
+                "unit": data.get("unit") if data else None,
+                "timestamp": None,
+                "value": None,
+            }
 
         # Find the most recent reading
         latest_reading = max(data["readings"], key=lambda x: x[0])

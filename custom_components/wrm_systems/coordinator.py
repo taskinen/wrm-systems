@@ -21,6 +21,9 @@ from .const import (
     HISTORICAL_DATA_DAYS,
     BACKFILL_DAYS,
     MAX_HISTORICAL_READINGS,
+    MIN_BACKFILL_DAYS,
+    MAX_BACKFILL_DAYS,
+    MIN_HISTORICAL_READINGS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,8 +77,27 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             # Get the latest reading for current sensors
             latest_data = await self.api.async_get_latest_reading()
             
-            # Add calculated usage data
-            latest_data["usage_data"] = self._calculate_usage_metrics()
+            # Handle case where no data is available
+            if latest_data.get("timestamp") is None or latest_data.get("value") is None:
+                _LOGGER.warning("No valid readings available from API")
+                # Return minimal data structure to prevent sensor errors
+                latest_data = {
+                    "model": latest_data.get("model"),
+                    "serial_number": latest_data.get("serial_number"),
+                    "unit": latest_data.get("unit"),
+                    "timestamp": None,
+                    "value": None,
+                    "usage_data": {
+                        "hourly_usage": 0.0,
+                        "daily_usage": 0.0,
+                        "weekly_usage": 0.0,
+                        "monthly_usage": 0.0,
+                        "data_age_hours": 0.0,
+                    }
+                }
+            else:
+                # Add calculated usage data
+                latest_data["usage_data"] = self._calculate_usage_metrics()
             
             _LOGGER.debug("Successfully fetched data: %s", latest_data)
             return latest_data
@@ -89,16 +111,21 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         """Load historical data from storage."""
         try:
             stored_data = await self.store.async_load()
-            if stored_data:
-                self._historical_data = stored_data
-                self._last_reading_timestamp = stored_data.get("last_reading_timestamp")
-                _LOGGER.debug("Loaded historical data with %d readings", 
-                             len(stored_data.get("readings", [])))
+            if stored_data and isinstance(stored_data, dict):
+                # Validate stored data structure
+                if "readings" in stored_data and isinstance(stored_data["readings"], list):
+                    self._historical_data = stored_data
+                    self._last_reading_timestamp = stored_data.get("last_reading_timestamp")
+                    _LOGGER.debug("Loaded historical data with %d readings", 
+                                 len(stored_data.get("readings", [])))
+                else:
+                    _LOGGER.warning("Invalid stored data structure, resetting")
+                    self._historical_data = {"readings": [], "last_reading_timestamp": None}
             else:
                 self._historical_data = {"readings": [], "last_reading_timestamp": None}
-                _LOGGER.debug("No historical data found, starting fresh")
+                _LOGGER.debug("No valid historical data found, starting fresh")
         except Exception as err:
-            _LOGGER.warning("Failed to load historical data: %s", err)
+            _LOGGER.error("Failed to load historical data: %s", err)
             self._historical_data = {"readings": [], "last_reading_timestamp": None}
     
     async def _fetch_new_readings(self) -> list[dict[str, Any]]:
@@ -127,31 +154,40 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         if not new_readings:
             return
         
-        # Add async lock to prevent race conditions
         async with self._storage_lock:
-            # Add new readings to historical data
             existing_readings = self._historical_data.get("readings", [])
-            all_readings = existing_readings + new_readings
             
-            # Remove duplicates and sort by timestamp
-            unique_readings = {r["timestamp"]: r for r in all_readings}
-            sorted_readings = sorted(unique_readings.values(), key=lambda x: x["timestamp"])
+            # More efficient: use set for deduplication based on timestamp
+            existing_by_timestamp = {r["timestamp"]: r for r in existing_readings}
             
-            # Keep only last N days of data
+            # Add new readings, overwriting duplicates
+            for reading in new_readings:
+                existing_by_timestamp[reading["timestamp"]] = reading
+            
+            # Sort and filter in one pass
             cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
-            recent_readings = [r for r in sorted_readings if r["timestamp"] >= cutoff_timestamp]
+            recent_readings = [
+                r for r in existing_by_timestamp.values() 
+                if r["timestamp"] >= cutoff_timestamp
+            ]
+            recent_readings.sort(key=lambda x: x["timestamp"])
             
-            # Add maximum reading count limit to prevent excessive memory usage
+            # Apply maximum limit
             if len(recent_readings) > MAX_HISTORICAL_READINGS:
                 recent_readings = recent_readings[-MAX_HISTORICAL_READINGS:]
-                _LOGGER.info("Trimmed historical data to %d readings to manage memory usage", MAX_HISTORICAL_READINGS)
+                _LOGGER.info("Trimmed historical data to %d readings", MAX_HISTORICAL_READINGS)
             
-            # Update historical data
+            # Ensure minimum readings for meaningful calculations
+            if len(recent_readings) > 0 and len(recent_readings) < MIN_HISTORICAL_READINGS:
+                _LOGGER.debug("Historical data has only %d readings (minimum recommended: %d)", 
+                             len(recent_readings), MIN_HISTORICAL_READINGS)
+            
+            # Update data
             self._historical_data["readings"] = recent_readings
-            self._last_reading_timestamp = max(r["timestamp"] for r in recent_readings)
-            self._historical_data["last_reading_timestamp"] = self._last_reading_timestamp
+            if recent_readings:
+                self._last_reading_timestamp = recent_readings[-1]["timestamp"]
+                self._historical_data["last_reading_timestamp"] = self._last_reading_timestamp
             
-            # Save to storage
             await self.store.async_save(self._historical_data)
             _LOGGER.debug("Updated historical data with %d readings", len(recent_readings))
     
@@ -208,34 +244,37 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             return 0.0
         
         try:
-            # Sort by timestamp and validate data
-            sorted_readings: list[dict[str, Any]] = sorted(readings, key=lambda x: x.get("timestamp", 0))
-            
-            # Filter out invalid readings
-            valid_readings = [
-                r for r in sorted_readings 
-                if r.get("timestamp") and r.get("value") is not None
-            ]
+            # Validate and filter readings
+            valid_readings = []
+            for reading in readings:
+                if not isinstance(reading, dict):
+                    continue
+                timestamp = reading.get("timestamp")
+                value = reading.get("value")
+                if timestamp is not None and value is not None:
+                    try:
+                        # Ensure numeric types
+                        timestamp = int(timestamp) if isinstance(timestamp, (int, float)) else None
+                        value = float(value) if isinstance(value, (int, float)) else None
+                        if timestamp is not None and value is not None:
+                            valid_readings.append({"timestamp": timestamp, "value": value})
+                    except (ValueError, TypeError):
+                        continue
             
             if len(valid_readings) < 2:
                 return 0.0
             
+            # Sort by timestamp
+            valid_readings.sort(key=lambda x: x["timestamp"])
+            
             # Calculate usage as difference between first and last reading
-            first_reading = valid_readings[0]
-            last_reading = valid_readings[-1]
-            
-            first_value = first_reading.get("value", 0)
-            last_value = last_reading.get("value", 0)
-            
-            # Ensure values are numeric
-            if not isinstance(first_value, (int, float)) or not isinstance(last_value, (int, float)):
-                _LOGGER.warning("Invalid reading values: first=%s, last=%s", first_value, last_value)
-                return 0.0
+            first_value = valid_readings[0]["value"]
+            last_value = valid_readings[-1]["value"]
             
             usage = last_value - first_value
             return max(0, usage)  # Ensure non-negative usage
             
-        except (KeyError, TypeError, ValueError) as err:
+        except Exception as err:
             _LOGGER.warning("Error calculating usage for period: %s", err)
             return 0.0
     
@@ -245,17 +284,28 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             return 0.0
         
         try:
-            # Sort by timestamp and validate data
-            sorted_readings = sorted(readings, key=lambda x: x.get("timestamp", 0))
-            
-            # Filter out invalid readings
-            valid_readings = [
-                r for r in sorted_readings 
-                if r.get("timestamp") and r.get("value") is not None
-            ]
+            # Validate and filter readings
+            valid_readings = []
+            for reading in readings:
+                if not isinstance(reading, dict):
+                    continue
+                timestamp = reading.get("timestamp")
+                value = reading.get("value")
+                if timestamp is not None and value is not None:
+                    try:
+                        # Ensure numeric types
+                        timestamp = int(timestamp) if isinstance(timestamp, (int, float)) else None
+                        value = float(value) if isinstance(value, (int, float)) else None
+                        if timestamp is not None and value is not None:
+                            valid_readings.append({"timestamp": timestamp, "value": value})
+                    except (ValueError, TypeError):
+                        continue
             
             if len(valid_readings) < 2:
                 return 0.0
+            
+            # Sort by timestamp
+            valid_readings.sort(key=lambda x: x["timestamp"])
             
             # Get the most recent MAX_DATA_AGE_HOURS hours of readings
             # Fix: Calculate once for efficiency
@@ -284,7 +334,7 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             hourly_usage = total_usage / time_span_hours
             return max(0, hourly_usage)  # Ensure non-negative
             
-        except (KeyError, TypeError, ValueError) as err:
+        except Exception as err:
             _LOGGER.warning("Error calculating average hourly usage: %s", err)
             return 0.0
     
@@ -301,6 +351,10 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
     
     async def async_backfill_data(self, days: int = 7) -> None:
         """Backfill historical data for late-arriving readings."""
+        # Validate input parameters
+        if not isinstance(days, int) or days < MIN_BACKFILL_DAYS or days > MAX_BACKFILL_DAYS:
+            raise ValueError(f"Days must be an integer between {MIN_BACKFILL_DAYS} and {MAX_BACKFILL_DAYS}")
+        
         _LOGGER.info("Starting backfill operation for last %d days", days)
         
         try:
