@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "WRM-Systems Water Meter",
+        "description": "Enter your WRM-Systems API authentication token",
+        "data": {
+          "token": "API Token"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to WRM-Systems API",
+      "invalid_auth": "Invalid authentication token",
+      "unknown": "Unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "Service is already configured"
+    }
+  }
+}
