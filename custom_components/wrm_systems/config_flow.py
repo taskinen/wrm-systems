@@ -60,6 +60,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         session = async_get_clientsession(self.hass)
         api_client = WRMSystemsAPIClient(session, token)
         
-        # Test connection using the API client
-        await api_client.async_get_readings()
+        # Test connection using the robust test method
+        if not await api_client.async_test_connection():
+            raise APIError("Failed to connect to API")
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiohttp
@@ -27,10 +27,16 @@ class WRMSystemsAPIClient:
     ) -> dict[str, Any]:
         """Get water meter readings from the API."""
         if start_date is None:
-            start_date = datetime.now() - timedelta(days=1)
+            start_date = datetime.now(timezone.utc) - timedelta(days=1)
+        
+        # Ensure timezone awareness
+        if start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=timezone.utc)
         
         params = {"startDate": start_date.strftime("%Y-%m-%d")}
         if end_date:
+            if end_date.tzinfo is None:
+                end_date = end_date.replace(tzinfo=timezone.utc)
             params["endDate"] = end_date.strftime("%Y-%m-%d")
 
         _LOGGER.debug("Fetching readings with params: %s", params)
@@ -61,7 +67,12 @@ class WRMSystemsAPIClient:
                 if not data["readings"]:
                     _LOGGER.info("API returned empty readings array")
                     # Return empty data structure instead of raising an error
-                    return {"readings": [], "model": data.get("model"), "serialNumber": data.get("serialNumber"), "unit": data.get("unit")}
+                    return {
+                        "readings": [], 
+                        "model": data.get("model"), 
+                        "serialNumber": data.get("serialNumber"), 
+                        "unit": data.get("unit")
+                    }
                 
                 # Validate readings format
                 for i, reading in enumerate(data["readings"]):
@@ -91,12 +102,16 @@ class WRMSystemsAPIClient:
         # Find the most recent reading
         latest_reading = max(data["readings"], key=lambda x: x[0])
         
+        # Validate the reading data
+        if not isinstance(latest_reading[0], (int, float)) or not isinstance(latest_reading[1], (int, float)):
+            raise APIError("Invalid reading format in latest reading")
+        
         return {
             "model": data.get("model"),
-            "serial_number": data.get("serialNumber"),
+            "serial_number": data.get("serialNumber"),  # Consistent naming
             "unit": data.get("unit"),
-            "timestamp": latest_reading[0],
-            "value": latest_reading[1],
+            "timestamp": int(latest_reading[0]),  # Ensure integer timestamp
+            "value": float(latest_reading[1]),    # Ensure float value
         }
 
     async def async_get_readings_range(
@@ -111,12 +126,21 @@ class WRMSystemsAPIClient:
         # Convert readings to structured format
         readings = []
         for reading in data["readings"]:
+            # Validate reading format
+            if not isinstance(reading, list) or len(reading) != 2:
+                _LOGGER.warning("Skipping invalid reading format: %s", reading)
+                continue
+            
+            if not isinstance(reading[0], (int, float)) or not isinstance(reading[1], (int, float)):
+                _LOGGER.warning("Skipping reading with invalid types: %s", reading)
+                continue
+            
             readings.append({
                 "model": data.get("model"),
-                "serial_number": data.get("serialNumber"),
+                "serial_number": data.get("serialNumber"),  # Consistent naming
                 "unit": data.get("unit"),
-                "timestamp": reading[0],
-                "value": reading[1],
+                "timestamp": int(reading[0]),  # Ensure integer timestamp
+                "value": float(reading[1]),    # Ensure float value
             })
         
         # Sort by timestamp (oldest first)
@@ -127,8 +151,8 @@ class WRMSystemsAPIClient:
         self, since_timestamp: int
     ) -> list[dict[str, Any]]:
         """Get all readings since a specific timestamp."""
-        # Calculate start date from timestamp
-        start_date = datetime.fromtimestamp(since_timestamp)
+        # Calculate start date from timestamp with timezone awareness
+        start_date = datetime.fromtimestamp(since_timestamp, tz=timezone.utc)
         
         # Get readings from that date to now
         readings = await self.async_get_readings_range(start_date)
@@ -148,20 +172,44 @@ class WRMSystemsAPIClient:
             prev_reading = readings[i - 1]
             curr_reading = readings[i]
             
+            # Validate reading data
+            if not all(key in prev_reading for key in ["timestamp", "value"]):
+                _LOGGER.warning("Skipping invalid previous reading: %s", prev_reading)
+                continue
+            
+            if not all(key in curr_reading for key in ["timestamp", "value"]):
+                _LOGGER.warning("Skipping invalid current reading: %s", curr_reading)
+                continue
+            
+            # Ensure numeric values
+            try:
+                prev_value = float(prev_reading["value"])
+                curr_value = float(curr_reading["value"])
+                prev_timestamp = int(prev_reading["timestamp"])
+                curr_timestamp = int(curr_reading["timestamp"])
+            except (ValueError, TypeError) as err:
+                _LOGGER.warning("Skipping reading with invalid numeric values: %s", err)
+                continue
+            
             # Calculate usage (difference in values)
-            usage = curr_reading["value"] - prev_reading["value"]
+            usage = curr_value - prev_value
             
             # Calculate time difference in hours
-            time_diff = (curr_reading["timestamp"] - prev_reading["timestamp"]) / 3600
+            time_diff = (curr_timestamp - prev_timestamp) / 3600
+            
+            # Skip if time difference is invalid
+            if time_diff <= 0:
+                _LOGGER.warning("Skipping readings with invalid time difference: %s", time_diff)
+                continue
             
             usage_data.append({
-                "start_timestamp": prev_reading["timestamp"],
-                "end_timestamp": curr_reading["timestamp"],
-                "start_value": prev_reading["value"],
-                "end_value": curr_reading["value"],
-                "usage": usage,
+                "start_timestamp": prev_timestamp,
+                "end_timestamp": curr_timestamp,
+                "start_value": prev_value,
+                "end_value": curr_value,
+                "usage": max(0, usage),  # Ensure non-negative usage
                 "duration_hours": time_diff,
-                "unit": curr_reading["unit"],
+                "unit": curr_reading.get("unit", ""),
             })
         
         return usage_data

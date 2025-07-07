@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -13,7 +13,13 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.helpers.storage import Store
 
 from .api import WRMSystemsAPIClient, APIError, InvalidAuth
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import (
+    DEFAULT_SCAN_INTERVAL, 
+    DOMAIN, 
+    MAX_DATA_AGE_HOURS,
+    HISTORICAL_DATA_DAYS,
+    BACKFILL_DAYS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -102,10 +108,11 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
                 )
                 _LOGGER.debug("Found %d new readings since last update", len(new_readings))
             else:
-                # First run - get readings from last 7 days
-                start_date = datetime.now() - timedelta(days=7)
+                # First run - get readings from last N days
+                start_date = datetime.now(timezone.utc) - timedelta(days=BACKFILL_DAYS)
                 new_readings = await self.api.async_get_readings_range(start_date)
-                _LOGGER.debug("Initial fetch found %d readings from last 7 days", len(new_readings))
+                _LOGGER.debug("Initial fetch found %d readings from last %d days", 
+                             len(new_readings), BACKFILL_DAYS)
             
             return new_readings
         except APIError as err:
@@ -125,8 +132,8 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         unique_readings = {r["timestamp"]: r for r in all_readings}
         sorted_readings = sorted(unique_readings.values(), key=lambda x: x["timestamp"])
         
-        # Keep only last 30 days of data
-        cutoff_timestamp = int((datetime.now() - timedelta(days=30)).timestamp())
+        # Keep only last N days of data
+        cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
         recent_readings = [r for r in sorted_readings if r["timestamp"] >= cutoff_timestamp]
         
         # Update historical data
@@ -144,7 +151,7 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         if len(readings) < 2:
             return {"hourly_usage": 0, "daily_usage": 0, "weekly_usage": 0}
         
-        current_time = datetime.now()
+        current_time = datetime.now(timezone.utc)
         current_timestamp = int(current_time.timestamp())
         
         # Get latest reading
@@ -240,10 +247,10 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             if len(valid_readings) < 2:
                 return 0.0
             
-            # Get the most recent 24 hours of readings (accounting for delay)
-            current_time = datetime.now().timestamp()
-            # Look back 48 hours to account for potential delays
-            cutoff_timestamp = current_time - (48 * 3600)
+            # Get the most recent MAX_DATA_AGE_HOURS hours of readings
+            current_time = datetime.now(timezone.utc).timestamp()
+            # Look back to account for potential delays
+            cutoff_timestamp = current_time - (MAX_DATA_AGE_HOURS * 3600)
             recent_readings = [r for r in valid_readings if r["timestamp"] >= cutoff_timestamp]
             
             if len(recent_readings) < 2:
@@ -276,7 +283,7 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         readings = self._historical_data.get("readings", [])
         
         # Filter readings for the specified period
-        cutoff_timestamp = int((datetime.now() - timedelta(days=days)).timestamp())
+        cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
         period_readings = [r for r in readings if r["timestamp"] >= cutoff_timestamp]
         
         # Calculate usage between consecutive readings
@@ -288,7 +295,7 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         
         try:
             # Get date range for backfill
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=days)
             
             # Fetch all readings for the period
@@ -309,8 +316,8 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             unique_readings = {r["timestamp"]: r for r in all_readings}
             sorted_readings = sorted(unique_readings.values(), key=lambda x: x["timestamp"])
             
-            # Keep only last 30 days
-            cutoff_timestamp = int((datetime.now() - timedelta(days=30)).timestamp())
+            # Keep only last N days
+            cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
             recent_readings = [r for r in sorted_readings if r["timestamp"] >= cutoff_timestamp]
             
             # Update historical data
@@ -341,8 +348,8 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             self._historical_data = {"readings": [], "last_reading_timestamp": None}
             self._last_reading_timestamp = None
             
-            # Backfill last 7 days of data
-            await self.async_backfill_data(7)
+            # Backfill last N days of data
+            await self.async_backfill_data(BACKFILL_DAYS)
             
             # Trigger coordinator update
             await self.async_refresh()
