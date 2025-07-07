@@ -77,14 +77,16 @@ class WRMSystemsAPIClient:
                 return data
 
         except aiohttp.ClientError as err:
-            raise APIError(f"Error connecting to API: {err}") from err
+            raise APIError(f"Network error connecting to API: {err}") from err
+        except Exception as err:
+            raise APIError(f"Unexpected error during API request: {err}") from err
 
     async def async_get_latest_reading(self) -> dict[str, Any]:
         """Get the latest water meter reading."""
         data = await self.async_get_readings()
         
         if not data or "readings" not in data or not data["readings"]:
-            raise APIError("No readings available")
+            raise APIError("No readings available from API response")
 
         # Find the most recent reading
         latest_reading = max(data["readings"], key=lambda x: x[0])
@@ -169,7 +171,14 @@ class WRMSystemsAPIClient:
         try:
             await self.async_get_readings()
             return True
-        except (APIError, InvalidAuth):
+        except InvalidAuth:
+            _LOGGER.warning("Authentication failed during connection test")
+            return False
+        except APIError as err:
+            _LOGGER.warning("API error during connection test: %s", err)
+            return False
+        except Exception as err:
+            _LOGGER.warning("Unexpected error during connection test: %s", err)
             return False
 
 

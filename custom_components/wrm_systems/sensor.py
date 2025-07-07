@@ -55,7 +55,7 @@ class WRMSystemsWaterMeterSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = "Water Meter Reading"
         self._attr_unique_id = f"{config_entry.entry_id}_water_meter"
         self._attr_device_class = SensorDeviceClass.WATER
-        self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+        self._attr_state_class = SensorStateClass.MEASUREMENT_INCREASING
         self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
         self._attr_suggested_display_precision = 3
 
@@ -112,7 +112,67 @@ class WRMSystemsWaterMeterSensor(CoordinatorEntity, SensorEntity):
         }
 
 
-class WRMSystemsMonthlyUsageSensor(CoordinatorEntity, SensorEntity):
+class WRMSystemsUsageBaseSensor(CoordinatorEntity, SensorEntity):
+    """Base class for usage sensors with common functionality."""
+
+    def __init__(
+        self,
+        coordinator: WRMSystemsDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+        sensor_name: str,
+        unique_id_suffix: str,
+        usage_key: str,
+    ) -> None:
+        """Initialize the usage sensor."""
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._usage_key = usage_key
+        self._attr_name = sensor_name
+        self._attr_unique_id = f"{config_entry.entry_id}_{unique_id_suffix}"
+        self._attr_device_class = SensorDeviceClass.WATER
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
+        self._attr_suggested_display_precision = 3
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        if self.coordinator.data is None:
+            return False
+        
+        # Check if data is stale (older than 48 hours to account for API delay)
+        timestamp = self.coordinator.data.get("timestamp")
+        if timestamp is None:
+            return False
+        
+        data_age = datetime.now().timestamp() - timestamp
+        return data_age <= 48 * 3600  # 48 hours in seconds
+    
+    @property
+    def native_value(self) -> float | None:
+        """Return the usage value."""
+        if self.coordinator.data is None or not self.available:
+            return None
+
+        usage_data = self.coordinator.data.get("usage_data")
+        if usage_data is None:
+            return None
+        
+        return usage_data.get(self._usage_key, 0.0)
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device information."""
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": "WRM-Systems Water Meter",
+            "manufacturer": "WRM-Systems",
+            "model": self.coordinator.data.get("model") if self.coordinator.data else None,
+            "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
+        }
+
+
+class WRMSystemsMonthlyUsageSensor(WRMSystemsUsageBaseSensor):
     """Representation of monthly water usage sensor."""
 
     def __init__(
@@ -121,54 +181,16 @@ class WRMSystemsMonthlyUsageSensor(CoordinatorEntity, SensorEntity):
         config_entry: ConfigEntry,
     ) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self._config_entry = config_entry
-        self._attr_name = "Monthly Water Usage"
-        self._attr_unique_id = f"{config_entry.entry_id}_monthly_usage"
-        self._attr_device_class = SensorDeviceClass.WATER
-        self._attr_state_class = SensorStateClass.TOTAL
-        self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
-        self._attr_suggested_display_precision = 3
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        if self.coordinator.data is None:
-            return False
-        
-        # Check if data is stale (older than 48 hours to account for API delay)
-        timestamp = self.coordinator.data.get("timestamp")
-        if timestamp is None:
-            return False
-        
-        data_age = datetime.now().timestamp() - timestamp
-        return data_age <= 48 * 3600  # 48 hours in seconds
-    
-    @property
-    def native_value(self) -> float | None:
-        """Return the monthly usage."""
-        if self.coordinator.data is None or not self.available:
-            return None
-
-        usage_data = self.coordinator.data.get("usage_data")
-        if usage_data is None:
-            return None
-        
-        return usage_data.get("monthly_usage", 0.0)
-
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """Return device information."""
-        return {
-            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
-            "name": "WRM-Systems Water Meter",
-            "manufacturer": "WRM-Systems",
-            "model": self.coordinator.data.get("model") if self.coordinator.data else None,
-            "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
-        }
+        super().__init__(
+            coordinator,
+            config_entry,
+            "Monthly Water Usage",
+            "monthly_usage",
+            "monthly_usage"
+        )
 
 
-class WRMSystemsHourlyUsageSensor(CoordinatorEntity, SensorEntity):
+class WRMSystemsHourlyUsageSensor(WRMSystemsUsageBaseSensor):
     """Representation of hourly water usage sensor."""
 
     def __init__(
@@ -177,54 +199,16 @@ class WRMSystemsHourlyUsageSensor(CoordinatorEntity, SensorEntity):
         config_entry: ConfigEntry,
     ) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self._config_entry = config_entry
-        self._attr_name = "Hourly Water Usage"
-        self._attr_unique_id = f"{config_entry.entry_id}_hourly_usage"
-        self._attr_device_class = SensorDeviceClass.WATER
-        self._attr_state_class = SensorStateClass.TOTAL
-        self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
-        self._attr_suggested_display_precision = 3
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        if self.coordinator.data is None:
-            return False
-        
-        # Check if data is stale (older than 48 hours to account for API delay)
-        timestamp = self.coordinator.data.get("timestamp")
-        if timestamp is None:
-            return False
-        
-        data_age = datetime.now().timestamp() - timestamp
-        return data_age <= 48 * 3600  # 48 hours in seconds
-    
-    @property
-    def native_value(self) -> float | None:
-        """Return the hourly usage."""
-        if self.coordinator.data is None or not self.available:
-            return None
-
-        usage_data = self.coordinator.data.get("usage_data")
-        if usage_data is None:
-            return None
-        
-        return usage_data.get("hourly_usage", 0.0)
-
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """Return device information."""
-        return {
-            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
-            "name": "WRM-Systems Water Meter",
-            "manufacturer": "WRM-Systems",
-            "model": self.coordinator.data.get("model") if self.coordinator.data else None,
-            "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
-        }
+        super().__init__(
+            coordinator,
+            config_entry,
+            "Hourly Water Usage",
+            "hourly_usage",
+            "hourly_usage"
+        )
 
 
-class WRMSystemsDailyUsageSensor(CoordinatorEntity, SensorEntity):
+class WRMSystemsDailyUsageSensor(WRMSystemsUsageBaseSensor):
     """Representation of daily water usage sensor."""
 
     def __init__(
@@ -233,54 +217,16 @@ class WRMSystemsDailyUsageSensor(CoordinatorEntity, SensorEntity):
         config_entry: ConfigEntry,
     ) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self._config_entry = config_entry
-        self._attr_name = "Daily Water Usage"
-        self._attr_unique_id = f"{config_entry.entry_id}_daily_usage"
-        self._attr_device_class = SensorDeviceClass.WATER
-        self._attr_state_class = SensorStateClass.TOTAL
-        self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
-        self._attr_suggested_display_precision = 3
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        if self.coordinator.data is None:
-            return False
-        
-        # Check if data is stale (older than 48 hours to account for API delay)
-        timestamp = self.coordinator.data.get("timestamp")
-        if timestamp is None:
-            return False
-        
-        data_age = datetime.now().timestamp() - timestamp
-        return data_age <= 48 * 3600  # 48 hours in seconds
-    
-    @property
-    def native_value(self) -> float | None:
-        """Return the daily usage."""
-        if self.coordinator.data is None or not self.available:
-            return None
-
-        usage_data = self.coordinator.data.get("usage_data")
-        if usage_data is None:
-            return None
-        
-        return usage_data.get("daily_usage", 0.0)
-
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """Return device information."""
-        return {
-            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
-            "name": "WRM-Systems Water Meter",
-            "manufacturer": "WRM-Systems",
-            "model": self.coordinator.data.get("model") if self.coordinator.data else None,
-            "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
-        }
+        super().__init__(
+            coordinator,
+            config_entry,
+            "Daily Water Usage",
+            "daily_usage",
+            "daily_usage"
+        )
 
 
-class WRMSystemsWeeklyUsageSensor(CoordinatorEntity, SensorEntity):
+class WRMSystemsWeeklyUsageSensor(WRMSystemsUsageBaseSensor):
     """Representation of weekly water usage sensor."""
 
     def __init__(
@@ -289,48 +235,10 @@ class WRMSystemsWeeklyUsageSensor(CoordinatorEntity, SensorEntity):
         config_entry: ConfigEntry,
     ) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self._config_entry = config_entry
-        self._attr_name = "Weekly Water Usage"
-        self._attr_unique_id = f"{config_entry.entry_id}_weekly_usage"
-        self._attr_device_class = SensorDeviceClass.WATER
-        self._attr_state_class = SensorStateClass.TOTAL
-        self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
-        self._attr_suggested_display_precision = 3
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        if self.coordinator.data is None:
-            return False
-        
-        # Check if data is stale (older than 48 hours to account for API delay)
-        timestamp = self.coordinator.data.get("timestamp")
-        if timestamp is None:
-            return False
-        
-        data_age = datetime.now().timestamp() - timestamp
-        return data_age <= 48 * 3600  # 48 hours in seconds
-    
-    @property
-    def native_value(self) -> float | None:
-        """Return the weekly usage."""
-        if self.coordinator.data is None or not self.available:
-            return None
-
-        usage_data = self.coordinator.data.get("usage_data")
-        if usage_data is None:
-            return None
-        
-        return usage_data.get("weekly_usage", 0.0)
-
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """Return device information."""
-        return {
-            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
-            "name": "WRM-Systems Water Meter",
-            "manufacturer": "WRM-Systems",
-            "model": self.coordinator.data.get("model") if self.coordinator.data else None,
-            "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
-        }
+        super().__init__(
+            coordinator,
+            config_entry,
+            "Weekly Water Usage",
+            "weekly_usage",
+            "weekly_usage"
+        )

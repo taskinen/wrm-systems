@@ -170,13 +170,19 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         monthly_readings = [r for r in readings if r["timestamp"] >= start_of_month]
         monthly_usage = self._calculate_usage_for_period(monthly_readings)
         
+        # Calculate data age safely
+        latest_timestamp = latest_reading.get("timestamp")
+        data_age_hours = 0.0
+        if latest_timestamp:
+            data_age_hours = (current_timestamp - latest_timestamp) / 3600
+        
         return {
             "hourly_usage": hourly_usage,
             "daily_usage": daily_usage,
             "weekly_usage": weekly_usage,
             "monthly_usage": monthly_usage,
             "latest_reading": latest_reading,
-            "data_age_hours": (current_timestamp - latest_reading.get("timestamp", 0)) / 3600,
+            "data_age_hours": data_age_hours,
         }
     
     def _calculate_usage_for_period(self, readings: list[dict[str, Any]]) -> float:
