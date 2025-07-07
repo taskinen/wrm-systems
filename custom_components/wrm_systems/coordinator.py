@@ -136,6 +136,12 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
         recent_readings = [r for r in sorted_readings if r["timestamp"] >= cutoff_timestamp]
         
+        # Add maximum reading count limit to prevent excessive memory usage
+        MAX_READINGS = 1000  # Limit to prevent memory issues
+        if len(recent_readings) > MAX_READINGS:
+            recent_readings = recent_readings[-MAX_READINGS:]
+            _LOGGER.info("Trimmed historical data to %d readings to manage memory usage", MAX_READINGS)
+        
         # Update historical data
         self._historical_data["readings"] = recent_readings
         self._last_reading_timestamp = max(r["timestamp"] for r in recent_readings)
@@ -248,9 +254,9 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
                 return 0.0
             
             # Get the most recent MAX_DATA_AGE_HOURS hours of readings
-            current_time = datetime.now(timezone.utc).timestamp()
-            # Look back to account for potential delays
-            cutoff_timestamp = current_time - (MAX_DATA_AGE_HOURS * 3600)
+            # Fix: Calculate once for efficiency
+            current_timestamp = datetime.now(timezone.utc).timestamp()
+            cutoff_timestamp = current_timestamp - (MAX_DATA_AGE_HOURS * 3600)
             recent_readings = [r for r in valid_readings if r["timestamp"] >= cutoff_timestamp]
             
             if len(recent_readings) < 2:

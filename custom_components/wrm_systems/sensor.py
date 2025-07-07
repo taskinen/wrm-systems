@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -70,7 +70,8 @@ class WRMSystemsWaterMeterSensor(CoordinatorEntity, SensorEntity):
         if timestamp is None:
             return False
         
-        data_age = datetime.now().timestamp() - timestamp
+        # Fix: Use timezone-aware datetime
+        data_age = datetime.now(timezone.utc).timestamp() - timestamp
         return data_age <= 48 * 3600  # 48 hours in seconds
     
     @property
@@ -145,7 +146,8 @@ class WRMSystemsUsageBaseSensor(CoordinatorEntity, SensorEntity):
         if timestamp is None:
             return False
         
-        data_age = datetime.now().timestamp() - timestamp
+        # Fix: Use timezone-aware datetime
+        data_age = datetime.now(timezone.utc).timestamp() - timestamp
         return data_age <= 48 * 3600  # 48 hours in seconds
     
     @property

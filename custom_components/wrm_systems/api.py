@@ -1,6 +1,7 @@
 """API client for WRM-Systems water meter."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -12,6 +13,11 @@ from .const import API_BASE_URL
 
 _LOGGER = logging.getLogger(__name__)
 
+# Retry configuration
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # seconds
+REQUEST_TIMEOUT = 30  # seconds
+
 
 class WRMSystemsAPIClient:
     """API client for WRM-Systems water meter."""
@@ -21,6 +27,55 @@ class WRMSystemsAPIClient:
         self._session = session
         self._token = token
         self._headers = {"Authorization": f"Bearer {token}"}
+
+    async def _make_request_with_retry(
+        self, url: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Make HTTP request with retry logic and proper error handling."""
+        last_exception = None
+        
+        for attempt in range(MAX_RETRIES):
+            try:
+                timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+                async with self._session.get(
+                    url, headers=self._headers, params=params, timeout=timeout
+                ) as response:
+                    if response.status == 401:
+                        raise InvalidAuth("Invalid authentication token")
+                    elif response.status != 200:
+                        raise APIError(f"API returned status {response.status}")
+
+                    try:
+                        data = await response.json()
+                    except aiohttp.ContentTypeError as err:
+                        raise APIError(f"Invalid JSON response from API: {err}") from err
+                    except Exception as err:
+                        raise APIError(f"Failed to parse JSON response: {err}") from err
+                    
+                    _LOGGER.debug("API response (attempt %d): %s", attempt + 1, data)
+                    return data
+
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                last_exception = err
+                if attempt < MAX_RETRIES - 1:
+                    wait_time = RETRY_DELAY * (2 ** attempt)  # Exponential backoff
+                    _LOGGER.warning(
+                        "API request failed (attempt %d/%d), retrying in %d seconds: %s",
+                        attempt + 1, MAX_RETRIES, wait_time, err
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    _LOGGER.error("API request failed after %d attempts: %s", MAX_RETRIES, err)
+            except (InvalidAuth, APIError):
+                # Don't retry auth errors or API errors
+                raise
+            except Exception as err:
+                last_exception = err
+                _LOGGER.error("Unexpected error during API request: %s", err)
+                break
+        
+        # If we get here, all retries failed
+        raise APIError(f"Network error after {MAX_RETRIES} attempts: {last_exception}") from last_exception
 
     async def async_get_readings(
         self, start_date: datetime | None = None, end_date: datetime | None = None
@@ -42,53 +97,45 @@ class WRMSystemsAPIClient:
         _LOGGER.debug("Fetching readings with params: %s", params)
 
         try:
-            async with self._session.get(
-                API_BASE_URL, headers=self._headers, params=params
-            ) as response:
-                if response.status == 401:
-                    raise InvalidAuth("Invalid authentication token")
-                elif response.status != 200:
-                    raise APIError(f"API returned status {response.status}")
+            data = await self._make_request_with_retry(API_BASE_URL, params)
+                
+            # Validate response structure
+            if not isinstance(data, dict):
+                raise APIError("Invalid API response format: expected dict")
+            
+            if "readings" not in data:
+                raise APIError("Invalid API response: missing 'readings' field")
+            
+            if not isinstance(data["readings"], list):
+                raise APIError("Invalid API response: 'readings' must be a list")
+            
+            # Check for empty readings array
+            if not data["readings"]:
+                _LOGGER.info("API returned empty readings array")
+                # Return empty data structure instead of raising an error
+                return {
+                    "readings": [], 
+                    "model": data.get("model"), 
+                    "serialNumber": data.get("serialNumber"), 
+                    "unit": data.get("unit")
+                }
+            
+            # Validate readings format
+            for i, reading in enumerate(data["readings"]):
+                if not isinstance(reading, list) or len(reading) != 2:
+                    raise APIError(f"Invalid reading format at index {i}: expected [timestamp, value]")
+                
+                if not isinstance(reading[0], (int, float)):
+                    raise APIError(f"Invalid timestamp format at index {i}: expected number")
+                
+                if not isinstance(reading[1], (int, float)):
+                    raise APIError(f"Invalid value format at index {i}: expected number")
+            
+            return data
 
-                data = await response.json()
-                _LOGGER.debug("API response: %s", data)
-                
-                # Validate response structure
-                if not isinstance(data, dict):
-                    raise APIError("Invalid API response format: expected dict")
-                
-                if "readings" not in data:
-                    raise APIError("Invalid API response: missing 'readings' field")
-                
-                if not isinstance(data["readings"], list):
-                    raise APIError("Invalid API response: 'readings' must be a list")
-                
-                # Check for empty readings array
-                if not data["readings"]:
-                    _LOGGER.info("API returned empty readings array")
-                    # Return empty data structure instead of raising an error
-                    return {
-                        "readings": [], 
-                        "model": data.get("model"), 
-                        "serialNumber": data.get("serialNumber"), 
-                        "unit": data.get("unit")
-                    }
-                
-                # Validate readings format
-                for i, reading in enumerate(data["readings"]):
-                    if not isinstance(reading, list) or len(reading) != 2:
-                        raise APIError(f"Invalid reading format at index {i}: expected [timestamp, value]")
-                    
-                    if not isinstance(reading[0], (int, float)):
-                        raise APIError(f"Invalid timestamp format at index {i}: expected number")
-                    
-                    if not isinstance(reading[1], (int, float)):
-                        raise APIError(f"Invalid value format at index {i}: expected number")
-                
-                return data
-
-        except aiohttp.ClientError as err:
-            raise APIError(f"Network error connecting to API: {err}") from err
+        except (InvalidAuth, APIError):
+            # Re-raise our custom exceptions
+            raise
         except Exception as err:
             raise APIError(f"Unexpected error during API request: {err}") from err
 
