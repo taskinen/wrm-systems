@@ -21,12 +21,13 @@ from .const import (
     DEFAULT_MAX_DATA_AGE_HOURS,
     HISTORICAL_DATA_DAYS,
     BACKFILL_DAYS,
-    MAX_HISTORICAL_READINGS,
+    DEFAULT_HISTORICAL_DAYS,
     MIN_BACKFILL_DAYS,
     MAX_BACKFILL_DAYS,
     MIN_HISTORICAL_READINGS,
     CONF_SCAN_INTERVAL,
     CONF_MAX_DATA_AGE_HOURS,
+    CONF_HISTORICAL_DAYS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -114,6 +115,9 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         
         # Get max data age from config, with fallback to default
         self._max_data_age_hours = config_entry.data.get(CONF_MAX_DATA_AGE_HOURS, DEFAULT_MAX_DATA_AGE_HOURS)
+        
+        # Get historical days configuration (-1 means unlimited)
+        self._historical_days = config_entry.data.get(CONF_HISTORICAL_DAYS, DEFAULT_HISTORICAL_DAYS)
 
         super().__init__(
             hass,
@@ -240,11 +244,18 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
                 )
                 _LOGGER.debug("Found %d new readings since last update", len(new_readings))
             else:
-                # First run - get readings from last N days
-                start_date = datetime.now(timezone.utc) - timedelta(days=BACKFILL_DAYS)
-                new_readings = await self.api.async_get_readings_range(start_date)
-                _LOGGER.debug("Initial fetch found %d readings from last %d days", 
-                             len(new_readings), BACKFILL_DAYS)
+                # First run - check configuration for how much data to fetch
+                if self._historical_days == -1:
+                    # Fetch all available historical data
+                    _LOGGER.info("First run: fetching all available historical data")
+                    new_readings = await self.api.async_get_all_historical_readings()
+                    _LOGGER.info("Initial fetch found %d total historical readings", len(new_readings))
+                else:
+                    # Fetch specific number of days
+                    start_date = datetime.now(timezone.utc) - timedelta(days=self._historical_days)
+                    new_readings = await self.api.async_get_readings_range(start_date)
+                    _LOGGER.info("Initial fetch found %d readings from last %d days", 
+                               len(new_readings), self._historical_days)
             
             return new_readings
         except APIError as err:
@@ -278,18 +289,21 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
                 combined_readings = existing_readings + valid_new_readings
                 combined_readings.sort(key=lambda x: x["timestamp"])
                 
-                # Apply time-based filter
-                cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
-                recent_readings = [
-                    r for r in combined_readings 
-                    if r["timestamp"] >= cutoff_timestamp
-                ]
+                # Apply time-based filter only if historical_days is not -1 (unlimited)
+                if self._historical_days != -1:
+                    cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=self._historical_days)).timestamp())
+                    recent_readings = [
+                        r for r in combined_readings 
+                        if r["timestamp"] >= cutoff_timestamp
+                    ]
+                    _LOGGER.debug("Applied time-based filter: keeping %d days of data (%d readings)", 
+                                 self._historical_days, len(recent_readings))
+                else:
+                    # Unlimited storage - keep all readings
+                    recent_readings = combined_readings
+                    _LOGGER.debug("Unlimited storage: keeping all %d readings", len(recent_readings))
                 
-                # Apply maximum limit
-                if len(recent_readings) > MAX_HISTORICAL_READINGS:
-                    recent_readings = recent_readings[-MAX_HISTORICAL_READINGS:]
-                    _LOGGER.info("Trimmed historical data to %d readings", MAX_HISTORICAL_READINGS)
-                
+                # No maximum limit applied - store unlimited readings
                 # Update data
                 self._historical_data["readings"] = recent_readings
                 if recent_readings:
@@ -297,7 +311,8 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
                     self._historical_data["last_reading_timestamp"] = self._last_reading_timestamp
                 
                 await self.store.async_save(self._historical_data)
-                _LOGGER.debug("Updated historical data with %d new readings", len(valid_new_readings))
+                _LOGGER.debug("Updated historical data with %d new readings (total: %d)", 
+                             len(valid_new_readings), len(recent_readings))
             else:
                 _LOGGER.debug("No new readings to add")
             
@@ -486,9 +501,15 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
                 unique_readings = {r["timestamp"]: r for r in all_readings}
                 sorted_readings = sorted(unique_readings.values(), key=lambda x: x["timestamp"])
                 
-                # Keep only last N days
-                cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
-                recent_readings = [r for r in sorted_readings if r["timestamp"] >= cutoff_timestamp]
+                # Apply time-based filter only if historical_days is not -1 (unlimited)
+                if self._historical_days != -1:
+                    cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=self._historical_days)).timestamp())
+                    recent_readings = [r for r in sorted_readings if r["timestamp"] >= cutoff_timestamp]
+                    _LOGGER.debug("Applied time-based filter during backfill: keeping %d days of data", self._historical_days)
+                else:
+                    # Unlimited storage - keep all readings
+                    recent_readings = sorted_readings
+                    _LOGGER.debug("Unlimited storage during backfill: keeping all readings")
                 
                 # Update historical data
                 old_count = len(self._historical_data.get("readings", []))
@@ -537,37 +558,36 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             raise
     
     async def _periodic_storage_cleanup(self) -> None:
-        """Perform periodic cleanup of storage to prevent unbounded growth."""
+        """Perform periodic cleanup of storage (only for limited storage configurations)."""
+        # Skip cleanup if unlimited storage is configured
+        if self._historical_days == -1:
+            _LOGGER.debug("Unlimited storage configured - skipping periodic cleanup")
+            return
+            
         try:
             async with self._storage_lock:
                 readings = self._historical_data.get("readings", [])
                 
-                # Only cleanup if we have too many readings
-                if len(readings) <= MAX_HISTORICAL_READINGS:
-                    return
+                # Only cleanup based on time if configured with limited days
+                if self._historical_days > 0:
+                    # Calculate cleanup threshold (keep recent data, clean old data)
+                    cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=self._historical_days)).timestamp())
                     
-                # Calculate cleanup threshold (keep recent data, clean old data)
-                cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
-                
-                # Filter readings and apply limits
-                recent_readings = [r for r in readings if r["timestamp"] >= cutoff_timestamp]
-                recent_readings.sort(key=lambda x: x["timestamp"])
-                
-                # Keep maximum number of readings
-                if len(recent_readings) > MAX_HISTORICAL_READINGS:
-                    recent_readings = recent_readings[-MAX_HISTORICAL_READINGS:]
-                
-                # Update if changed
-                if len(recent_readings) != len(readings):
-                    old_count = len(readings)
-                    self._historical_data["readings"] = recent_readings
+                    # Filter readings to keep only recent ones
+                    recent_readings = [r for r in readings if r["timestamp"] >= cutoff_timestamp]
+                    recent_readings.sort(key=lambda x: x["timestamp"])
                     
-                    if recent_readings:
-                        self._last_reading_timestamp = recent_readings[-1]["timestamp"]
-                        self._historical_data["last_reading_timestamp"] = self._last_reading_timestamp
-                    
-                    await self.store.async_save(self._historical_data)
-                    _LOGGER.info("Storage cleanup: reduced from %d to %d readings", old_count, len(recent_readings))
+                    # Update if changed
+                    if len(recent_readings) != len(readings):
+                        old_count = len(readings)
+                        self._historical_data["readings"] = recent_readings
+                        
+                        if recent_readings:
+                            self._last_reading_timestamp = recent_readings[-1]["timestamp"]
+                            self._historical_data["last_reading_timestamp"] = self._last_reading_timestamp
+                        
+                        await self.store.async_save(self._historical_data)
+                        _LOGGER.info("Storage cleanup: reduced from %d to %d readings", old_count, len(recent_readings))
                     
         except Exception as err:
             _LOGGER.error("Storage cleanup failed: %s", err)

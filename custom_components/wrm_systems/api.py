@@ -352,6 +352,53 @@ class WRMSystemsAPIClient:
             _LOGGER.warning("Unexpected error during connection test: %s", err)
             return False
 
+    async def async_get_all_historical_readings(self) -> list[dict[str, Any]]:
+        """Get all available historical readings by iterating backwards until no data is found."""
+        all_readings = []
+        current_date = datetime.now(timezone.utc)
+        batch_size_days = 30  # Fetch data in 30-day batches
+        
+        _LOGGER.info("Starting to fetch all available historical data")
+        
+        while True:
+            # Calculate the date range for this batch
+            start_date = current_date - timedelta(days=batch_size_days)
+            
+            try:
+                # Get readings for this date range
+                batch_readings = await self.async_get_readings_range(start_date, current_date)
+                
+                if not batch_readings:
+                    # No more data available, stop fetching
+                    _LOGGER.info("No more historical data available before %s", start_date.strftime("%Y-%m-%d"))
+                    break
+                
+                # Add to our collection (avoiding duplicates)
+                existing_timestamps = {r["timestamp"] for r in all_readings}
+                new_readings = [r for r in batch_readings if r["timestamp"] not in existing_timestamps]
+                all_readings.extend(new_readings)
+                
+                _LOGGER.info("Fetched %d readings for period %s to %s (total: %d)", 
+                           len(batch_readings), start_date.strftime("%Y-%m-%d"), 
+                           current_date.strftime("%Y-%m-%d"), len(all_readings))
+                
+                # Move to the next batch (further back in time)
+                current_date = start_date
+                
+            except APIError as err:
+                _LOGGER.warning("API error while fetching historical data for %s: %s", 
+                               start_date.strftime("%Y-%m-%d"), err)
+                break
+            except Exception as err:
+                _LOGGER.error("Unexpected error while fetching historical data: %s", err)
+                break
+        
+        # Sort by timestamp (oldest first)
+        all_readings.sort(key=lambda x: x["timestamp"])
+        
+        _LOGGER.info("Completed fetching all historical data: %d total readings", len(all_readings))
+        return all_readings
+
 
 class APIError(Exception):
     """Exception raised when API returns an error."""

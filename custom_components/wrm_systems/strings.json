@@ -7,7 +7,8 @@
         "data": {
           "token": "API Token",
           "scan_interval": "Scan Interval (seconds)",
-          "max_data_age_hours": "Maximum Data Age (hours)"
+          "max_data_age_hours": "Maximum Data Age (hours)",
+          "historical_days": "Historical Data Days (-1 for all available)"
         }
       }
     },
@@ -17,6 +18,7 @@
       "api_error": "API error occurred during setup",
       "scan_interval_invalid": "Scan interval must be between 300 and 86400 seconds (5 minutes to 24 hours)",
       "max_data_age_hours_invalid": "Maximum data age must be between 6 and 168 hours (6 hours to 7 days)",
+      "historical_days_invalid": "Historical data days must be between 1 and 3650 days, or -1 for all available data",
       "unknown": "Unexpected error occurred"
     },
     "abort": {

@@ -16,14 +16,19 @@ from .const import (
     DOMAIN, 
     CONF_SCAN_INTERVAL, 
     CONF_MAX_DATA_AGE_HOURS,
+    CONF_HISTORICAL_DAYS,
     DEFAULT_SCAN_INTERVAL, 
     DEFAULT_MAX_DATA_AGE_HOURS,
+    DEFAULT_HISTORICAL_DAYS,
     MIN_SCAN_INTERVAL,
     MAX_SCAN_INTERVAL,
     MIN_MAX_DATA_AGE_HOURS,
     MAX_MAX_DATA_AGE_HOURS,
+    MIN_HISTORICAL_DAYS,
+    MAX_HISTORICAL_DAYS,
     validate_scan_interval,
     validate_max_data_age_hours,
+    validate_historical_days,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -44,6 +49,13 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         ): vol.All(
             vol.Coerce(int),
             vol.Range(min=MIN_MAX_DATA_AGE_HOURS, max=MAX_MAX_DATA_AGE_HOURS)
+        ),
+        vol.Optional(
+            CONF_HISTORICAL_DAYS,
+            default=DEFAULT_HISTORICAL_DAYS
+        ): vol.Any(
+            vol.All(vol.Coerce(int), vol.Range(min=MIN_HISTORICAL_DAYS, max=MAX_HISTORICAL_DAYS)),
+            vol.All(vol.Coerce(int), vol.In([-1]))  # Allow -1 for unlimited
         ),
     }
 )
@@ -81,6 +93,12 @@ class ConfigFlow(config_entries.ConfigFlow):
             max_data_age_hours = user_input[CONF_MAX_DATA_AGE_HOURS]
             if not validate_max_data_age_hours(max_data_age_hours):
                 errors[CONF_MAX_DATA_AGE_HOURS] = "max_data_age_hours_invalid"
+
+        # Validate historical days
+        if CONF_HISTORICAL_DAYS in user_input:
+            historical_days = user_input[CONF_HISTORICAL_DAYS]
+            if not validate_historical_days(historical_days):
+                errors[CONF_HISTORICAL_DAYS] = "historical_days_invalid"
 
         if not errors:
             try:
