@@ -21,6 +21,81 @@ from .coordinator import WRMSystemsDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+# Constants for availability check
+MAX_DATA_AGE_HOURS = 48  # Maximum age in hours before considering data stale
+
+
+class WRMSystemsBaseSensor(CoordinatorEntity, SensorEntity):
+    """Base class for WRM-Systems sensors with common functionality."""
+
+    def __init__(
+        self,
+        coordinator: WRMSystemsDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+        name: str,
+        unique_id: str,
+    ) -> None:
+        """Initialize the base sensor."""
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._attr_name = name
+        self._attr_unique_id = unique_id
+        self._attr_has_entity_name = True
+        self._attr_entity_registry_enabled_default = True
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        if self.coordinator.data is None:
+            return False
+        
+        # Check if data is stale (considering API delay)
+        timestamp = self.coordinator.data.get("timestamp")
+        if timestamp is None:
+            return False
+        
+        # Use consistent timezone-aware timestamp comparison
+        current_timestamp = datetime.now(timezone.utc).timestamp()
+        data_age_hours = (current_timestamp - timestamp) / 3600
+        return data_age_hours <= MAX_DATA_AGE_HOURS
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device information."""
+        # Get device info from coordinator data if available, with fallbacks
+        device_data = self.coordinator.data or {}
+        
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": "WRM-Systems Water Meter",
+            "manufacturer": "WRM-Systems",
+            "model": device_data.get("model", "Unknown"),
+            "serial_number": device_data.get("serial_number"),
+            "sw_version": "1.0.0",
+            "hw_version": None,
+            "configuration_url": "https://wmd.wrm-systems.fi",
+        }
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return common state attributes."""
+        if self.coordinator.data is None:
+            return {}
+        
+        attributes = {
+            "model": self.coordinator.data.get("model"),
+            "serial_number": self.coordinator.data.get("serial_number"),
+            "unit": self.coordinator.data.get("unit"),
+            "last_reading": self.coordinator.data.get("timestamp"),
+        }
+        
+        # Add data freshness information
+        usage_data = self.coordinator.data.get("usage_data", {})
+        if "data_age_hours" in usage_data:
+            attributes["data_age_hours"] = round(usage_data["data_age_hours"], 1)
+            
+        return attributes
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -41,7 +116,7 @@ async def async_setup_entry(
     async_add_entities(sensors)
 
 
-class WRMSystemsWaterMeterSensor(CoordinatorEntity, SensorEntity):
+class WRMSystemsWaterMeterSensor(WRMSystemsBaseSensor):
     """Representation of a WRM-Systems water meter sensor."""
 
     def __init__(
@@ -50,34 +125,17 @@ class WRMSystemsWaterMeterSensor(CoordinatorEntity, SensorEntity):
         config_entry: ConfigEntry,
     ) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self._config_entry = config_entry
-        self._attr_name = "Water Meter Reading"
-        self._attr_unique_id = f"{config_entry.entry_id}_water_meter"
+        super().__init__(
+            coordinator,
+            config_entry,
+            "Water Meter Reading",
+            f"{config_entry.entry_id}_water_meter"
+        )
         self._attr_device_class = SensorDeviceClass.WATER
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
         self._attr_suggested_display_precision = 3
-        # Add entity registry support
-        self._attr_has_entity_name = True
-        self._attr_entity_registry_enabled_default = True
 
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        if self.coordinator.data is None:
-            return False
-        
-        # Check if data is stale (older than 48 hours to account for API delay)
-        timestamp = self.coordinator.data.get("timestamp")
-        if timestamp is None:
-            return False
-        
-        # Fix: Use timezone-aware datetime and compare timestamps directly
-        current_timestamp = datetime.now(timezone.utc).timestamp()
-        data_age = current_timestamp - timestamp
-        return data_age <= 48 * 3600  # 48 hours in seconds
-    
     @property
     def native_value(self) -> float | None:
         """Return the state of the sensor."""
@@ -85,42 +143,8 @@ class WRMSystemsWaterMeterSensor(CoordinatorEntity, SensorEntity):
             return None
         return self.coordinator.data.get("value")
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return additional state attributes."""
-        if self.coordinator.data is None:
-            return {}
-        
-        attributes = {
-            "model": self.coordinator.data.get("model"),
-            "serial_number": self.coordinator.data.get("serial_number"),
-            "unit": self.coordinator.data.get("unit"),
-            "last_reading": self.coordinator.data.get("timestamp"),
-        }
-        
-        # Add data freshness information
-        usage_data = self.coordinator.data.get("usage_data", {})
-        if "data_age_hours" in usage_data:
-            attributes["data_age_hours"] = round(usage_data["data_age_hours"], 1)
-            
-        return attributes
 
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """Return device information."""
-        return {
-            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
-            "name": "WRM-Systems Water Meter",
-            "manufacturer": "WRM-Systems",
-            "model": self.coordinator.data.get("model") if self.coordinator.data else "Unknown",
-            "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
-            "sw_version": "1.0.0",
-            "hw_version": None,
-            "configuration_url": "https://wmd.wrm-systems.fi",
-        }
-
-
-class WRMSystemsUsageBaseSensor(CoordinatorEntity, SensorEntity):
+class WRMSystemsUsageBaseSensor(WRMSystemsBaseSensor):
     """Base class for usage sensors with common functionality."""
 
     def __init__(
@@ -132,35 +156,18 @@ class WRMSystemsUsageBaseSensor(CoordinatorEntity, SensorEntity):
         usage_key: str,
     ) -> None:
         """Initialize the usage sensor."""
-        super().__init__(coordinator)
-        self._config_entry = config_entry
+        super().__init__(
+            coordinator,
+            config_entry,
+            sensor_name,
+            f"{config_entry.entry_id}_{unique_id_suffix}"
+        )
         self._usage_key = usage_key
-        self._attr_name = sensor_name
-        self._attr_unique_id = f"{config_entry.entry_id}_{unique_id_suffix}"
         self._attr_device_class = SensorDeviceClass.WATER
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
         self._attr_suggested_display_precision = 3
-        # Add entity registry support
-        self._attr_has_entity_name = True
-        self._attr_entity_registry_enabled_default = True
 
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        if self.coordinator.data is None:
-            return False
-        
-        # Check if data is stale (older than 48 hours to account for API delay)
-        timestamp = self.coordinator.data.get("timestamp")
-        if timestamp is None:
-            return False
-        
-        # Fix: Use timezone-aware datetime and compare timestamps directly
-        current_timestamp = datetime.now(timezone.utc).timestamp()
-        data_age = current_timestamp - timestamp
-        return data_age <= 48 * 3600  # 48 hours in seconds
-    
     @property
     def native_value(self) -> float | None:
         """Return the usage value."""
@@ -176,34 +183,15 @@ class WRMSystemsUsageBaseSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional state attributes."""
-        if self.coordinator.data is None:
-            return {}
+        attributes = super().extra_state_attributes
         
-        usage_data = self.coordinator.data.get("usage_data", {})
-        attributes = {
-            "usage_period": self._usage_key.replace("_", " ").title(),
-            "last_updated": self.coordinator.data.get("timestamp"),
-        }
-        
-        # Add data freshness information
-        if "data_age_hours" in usage_data:
-            attributes["data_age_hours"] = round(usage_data["data_age_hours"], 1)
+        if self.coordinator.data is not None:
+            attributes.update({
+                "usage_period": self._usage_key.replace("_", " ").title(),
+                "last_updated": self.coordinator.data.get("timestamp"),
+            })
             
         return attributes
-
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """Return device information."""
-        return {
-            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
-            "name": "WRM-Systems Water Meter",
-            "manufacturer": "WRM-Systems",
-            "model": self.coordinator.data.get("model") if self.coordinator.data else "Unknown",
-            "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
-            "sw_version": "1.0.0",
-            "hw_version": None,
-            "configuration_url": "https://wmd.wrm-systems.fi",
-        }
 
 
 class WRMSystemsMonthlyUsageSensor(WRMSystemsUsageBaseSensor):

@@ -24,6 +24,7 @@ from .const import (
     MIN_BACKFILL_DAYS,
     MAX_BACKFILL_DAYS,
     MIN_HISTORICAL_READINGS,
+    CONF_SCAN_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,19 +54,24 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         self._last_reading_timestamp: int | None = None
         self._storage_lock = asyncio.Lock()
 
+        # Get scan interval from config, with fallback to default
+        scan_interval = config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
+            update_interval=timedelta(seconds=scan_interval),
         )
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Update data via library."""
         try:
-            # Load stored data on first run
+            # Load stored data on first run (protected by lock)
             if not self._historical_data:
-                await self._load_historical_data()
+                async with self._storage_lock:
+                    if not self._historical_data:  # Double-check pattern
+                        await self._load_historical_data()
             
             # Get new readings since last update
             new_readings = await self._fetch_new_readings()
@@ -73,6 +79,15 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             # Update historical data with new readings
             if new_readings:
                 await self._update_historical_data(new_readings)
+            
+            # Periodically clean up storage (every 10th update)
+            if hasattr(self, '_update_count'):
+                self._update_count += 1
+            else:
+                self._update_count = 1
+                
+            if self._update_count % 10 == 0:
+                await self._periodic_storage_cleanup()
             
             # Get the latest reading for current sensors
             latest_data = await self.api.async_get_latest_reading()
@@ -197,8 +212,11 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         if len(readings) < 2:
             return {"hourly_usage": 0, "daily_usage": 0, "weekly_usage": 0}
         
-        current_time = datetime.now(timezone.utc)
-        current_timestamp = int(current_time.timestamp())
+        # Use Home Assistant's timezone for user-centric calculations
+        local_tz = self.hass.config.time_zone
+        current_time_utc = datetime.now(timezone.utc)
+        current_time_local = current_time_utc.astimezone(local_tz)
+        current_timestamp = int(current_time_utc.timestamp())
         
         # Get latest reading
         latest_reading = max(readings, key=lambda x: x["timestamp"])
@@ -208,8 +226,9 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         # Instead, calculate average hourly usage from recent readings
         hourly_usage = self._calculate_average_hourly_usage(readings)
         
-        # Calculate daily usage (since start of day)
-        start_of_day = int(current_time.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        # Calculate daily usage (since start of day in local time)
+        start_of_day_local = current_time_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_of_day = int(start_of_day_local.timestamp())
         daily_readings = [r for r in readings if r["timestamp"] >= start_of_day]
         daily_usage = self._calculate_usage_for_period(daily_readings)
         
@@ -218,8 +237,9 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         weekly_readings = [r for r in readings if r["timestamp"] >= week_ago]
         weekly_usage = self._calculate_usage_for_period(weekly_readings)
         
-        # Calculate monthly usage (since start of month)
-        start_of_month = int(current_time.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp())
+        # Calculate monthly usage (since start of month in local time)
+        start_of_month_local = current_time_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        start_of_month = int(start_of_month_local.timestamp())
         monthly_readings = [r for r in readings if r["timestamp"] >= start_of_month]
         monthly_usage = self._calculate_usage_for_period(monthly_readings)
         
@@ -253,12 +273,25 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
                 value = reading.get("value")
                 if timestamp is not None and value is not None:
                     try:
-                        # Ensure numeric types
-                        timestamp = int(timestamp) if isinstance(timestamp, (int, float)) else None
-                        value = float(value) if isinstance(value, (int, float)) else None
-                        if timestamp is not None and value is not None:
+                        # More robust type conversion with string handling
+                        if isinstance(timestamp, str):
+                            timestamp = int(float(timestamp))
+                        elif isinstance(timestamp, (int, float)):
+                            timestamp = int(timestamp)
+                        else:
+                            continue
+                            
+                        if isinstance(value, str):
+                            value = float(value)
+                        elif isinstance(value, (int, float)):
+                            value = float(value)
+                        else:
+                            continue
+                            
+                        # Validate ranges
+                        if timestamp > 0 and not (value < 0 or value > 999999):
                             valid_readings.append({"timestamp": timestamp, "value": value})
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, OverflowError):
                         continue
             
             if len(valid_readings) < 2:
@@ -293,12 +326,25 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
                 value = reading.get("value")
                 if timestamp is not None and value is not None:
                     try:
-                        # Ensure numeric types
-                        timestamp = int(timestamp) if isinstance(timestamp, (int, float)) else None
-                        value = float(value) if isinstance(value, (int, float)) else None
-                        if timestamp is not None and value is not None:
+                        # More robust type conversion with string handling
+                        if isinstance(timestamp, str):
+                            timestamp = int(float(timestamp))
+                        elif isinstance(timestamp, (int, float)):
+                            timestamp = int(timestamp)
+                        else:
+                            continue
+                            
+                        if isinstance(value, str):
+                            value = float(value)
+                        elif isinstance(value, (int, float)):
+                            value = float(value)
+                        else:
+                            continue
+                            
+                        # Validate ranges
+                        if timestamp > 0 and not (value < 0 or value > 999999):
                             valid_readings.append({"timestamp": timestamp, "value": value})
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, OverflowError):
                         continue
             
             if len(valid_readings) < 2:
@@ -369,35 +415,38 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.info("No readings found for backfill period")
                 return
             
-            # Load existing data
-            await self._load_historical_data()
-            
-            # Merge with existing readings
-            existing_readings = self._historical_data.get("readings", [])
-            all_readings = existing_readings + backfill_readings
-            
-            # Remove duplicates and sort
-            unique_readings = {r["timestamp"]: r for r in all_readings}
-            sorted_readings = sorted(unique_readings.values(), key=lambda x: x["timestamp"])
-            
-            # Keep only last N days
-            cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
-            recent_readings = [r for r in sorted_readings if r["timestamp"] >= cutoff_timestamp]
-            
-            # Update historical data
-            old_count = len(self._historical_data.get("readings", []))
-            self._historical_data["readings"] = recent_readings
-            
-            if recent_readings:
-                self._last_reading_timestamp = max(r["timestamp"] for r in recent_readings)
-                self._historical_data["last_reading_timestamp"] = self._last_reading_timestamp
-            
-            # Save updated data
-            await self.store.async_save(self._historical_data)
-            
-            new_count = len(recent_readings)
-            _LOGGER.info("Backfill completed: %d readings (was %d, now %d)", 
-                        new_count - old_count, old_count, new_count)
+            # Protect the entire backfill operation with lock
+            async with self._storage_lock:
+                # Load existing data
+                if not self._historical_data:
+                    await self._load_historical_data()
+                
+                # Merge with existing readings
+                existing_readings = self._historical_data.get("readings", [])
+                all_readings = existing_readings + backfill_readings
+                
+                # Remove duplicates and sort
+                unique_readings = {r["timestamp"]: r for r in all_readings}
+                sorted_readings = sorted(unique_readings.values(), key=lambda x: x["timestamp"])
+                
+                # Keep only last N days
+                cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
+                recent_readings = [r for r in sorted_readings if r["timestamp"] >= cutoff_timestamp]
+                
+                # Update historical data
+                old_count = len(self._historical_data.get("readings", []))
+                self._historical_data["readings"] = recent_readings
+                
+                if recent_readings:
+                    self._last_reading_timestamp = max(r["timestamp"] for r in recent_readings)
+                    self._historical_data["last_reading_timestamp"] = self._last_reading_timestamp
+                
+                # Save updated data
+                await self.store.async_save(self._historical_data)
+                
+                new_count = len(recent_readings)
+                _LOGGER.info("Backfill completed: %d readings (was %d, now %d)", 
+                            new_count - old_count, old_count, new_count)
             
         except Exception as err:
             _LOGGER.error("Backfill operation failed: %s", err)
@@ -408,11 +457,17 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         _LOGGER.info("Force refresh requested")
         
         try:
-            # Clear existing data
-            self._historical_data = {"readings": [], "last_reading_timestamp": None}
-            self._last_reading_timestamp = None
+            # Protect the entire force refresh operation with lock
+            async with self._storage_lock:
+                # Clear existing data
+                self._historical_data = {"readings": [], "last_reading_timestamp": None}
+                self._last_reading_timestamp = None
+                
+                # Backfill last N days of data (this will acquire the lock again but that's ok)
+                # Note: We need to release the lock temporarily for backfill
+                pass
             
-            # Backfill last N days of data
+            # Now do backfill (which has its own locking)
             await self.async_backfill_data(BACKFILL_DAYS)
             
             # Trigger coordinator update
@@ -423,3 +478,39 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.error("Force refresh failed: %s", err)
             raise
+    
+    async def _periodic_storage_cleanup(self) -> None:
+        """Perform periodic cleanup of storage to prevent unbounded growth."""
+        try:
+            async with self._storage_lock:
+                readings = self._historical_data.get("readings", [])
+                
+                # Only cleanup if we have too many readings
+                if len(readings) <= MAX_HISTORICAL_READINGS:
+                    return
+                    
+                # Calculate cleanup threshold (keep recent data, clean old data)
+                cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
+                
+                # Filter readings and apply limits
+                recent_readings = [r for r in readings if r["timestamp"] >= cutoff_timestamp]
+                recent_readings.sort(key=lambda x: x["timestamp"])
+                
+                # Keep maximum number of readings
+                if len(recent_readings) > MAX_HISTORICAL_READINGS:
+                    recent_readings = recent_readings[-MAX_HISTORICAL_READINGS:]
+                
+                # Update if changed
+                if len(recent_readings) != len(readings):
+                    old_count = len(readings)
+                    self._historical_data["readings"] = recent_readings
+                    
+                    if recent_readings:
+                        self._last_reading_timestamp = recent_readings[-1]["timestamp"]
+                        self._historical_data["last_reading_timestamp"] = self._last_reading_timestamp
+                    
+                    await self.store.async_save(self._historical_data)
+                    _LOGGER.info("Storage cleanup: reduced from %d to %d readings", old_count, len(recent_readings))
+                    
+        except Exception as err:
+            _LOGGER.error("Storage cleanup failed: %s", err)

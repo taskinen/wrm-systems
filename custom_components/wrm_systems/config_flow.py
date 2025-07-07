@@ -12,13 +12,20 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import InvalidAuth, APIError, WRMSystemsAPIClient
-from .const import DOMAIN
+from .const import DOMAIN, MIN_SCAN_INTERVAL, MAX_SCAN_INTERVAL, CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_TOKEN): str,
+        vol.Optional(
+            CONF_SCAN_INTERVAL, 
+            default=DEFAULT_SCAN_INTERVAL
+        ): vol.All(
+            vol.Coerce(int),
+            vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL)
+        ),
     }
 )
 
@@ -39,17 +46,24 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         errors = {}
 
-        try:
-            await self._test_credentials(user_input[CONF_TOKEN])
-        except InvalidAuth:
-            errors["base"] = "invalid_auth"
-        except APIError:
-            errors["base"] = "cannot_connect"
-        except Exception:  # pylint: disable=broad-except
-            _LOGGER.exception("Unexpected exception")
-            errors["base"] = "unknown"
-        else:
-            return self.async_create_entry(title="WRM-Systems", data=user_input)
+        # Validate scan interval
+        if CONF_SCAN_INTERVAL in user_input:
+            scan_interval = user_input[CONF_SCAN_INTERVAL]
+            if not isinstance(scan_interval, int) or scan_interval < MIN_SCAN_INTERVAL or scan_interval > MAX_SCAN_INTERVAL:
+                errors[CONF_SCAN_INTERVAL] = f"scan_interval_invalid"
+
+        if not errors:
+            try:
+                await self._test_credentials(user_input[CONF_TOKEN])
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except APIError:
+                errors["base"] = "cannot_connect"
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
+            else:
+                return self.async_create_entry(title="WRM-Systems", data=user_input)
 
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors

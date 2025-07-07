@@ -3,15 +3,17 @@
     "step": {
       "user": {
         "title": "WRM-Systems Water Meter",
-        "description": "Enter your WRM-Systems API authentication token",
+        "description": "Enter your WRM-Systems API authentication token and optional scan interval",
         "data": {
-          "token": "API Token"
+          "token": "API Token",
+          "scan_interval": "Scan Interval (seconds)"
         }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect to WRM-Systems API",
       "invalid_auth": "Invalid authentication token",
+      "scan_interval_invalid": "Scan interval must be between 300 and 86400 seconds (5 minutes to 24 hours)",
       "unknown": "Unexpected error occurred"
     },
     "abort": {
