@@ -3,17 +3,20 @@
     "step": {
       "user": {
         "title": "WRM-Systems Water Meter",
-        "description": "Enter your WRM-Systems API authentication token and optional scan interval",
+        "description": "Enter your WRM-Systems API authentication token and configuration options",
         "data": {
           "token": "API Token",
-          "scan_interval": "Scan Interval (seconds)"
+          "scan_interval": "Scan Interval (seconds)",
+          "max_data_age_hours": "Maximum Data Age (hours)"
         }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect to WRM-Systems API",
       "invalid_auth": "Invalid authentication token",
+      "api_error": "API error occurred during setup",
       "scan_interval_invalid": "Scan interval must be between 300 and 86400 seconds (5 minutes to 24 hours)",
+      "max_data_age_hours_invalid": "Maximum data age must be between 6 and 168 hours (6 hours to 7 days)",
       "unknown": "Unexpected error occurred"
     },
     "abort": {

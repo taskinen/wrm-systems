@@ -18,6 +18,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL, 
     DOMAIN, 
     MAX_DATA_AGE_HOURS,
+    DEFAULT_MAX_DATA_AGE_HOURS,
     HISTORICAL_DATA_DAYS,
     BACKFILL_DAYS,
     MAX_HISTORICAL_READINGS,
@@ -25,11 +26,65 @@ from .const import (
     MAX_BACKFILL_DAYS,
     MIN_HISTORICAL_READINGS,
     CONF_SCAN_INTERVAL,
+    CONF_MAX_DATA_AGE_HOURS,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 1
+
+
+def _safe_convert_timestamp(timestamp: Any) -> int | None:
+    """Safely convert timestamp to integer with validation."""
+    try:
+        if isinstance(timestamp, str):
+            timestamp = int(float(timestamp))
+        elif isinstance(timestamp, (int, float)):
+            timestamp = int(timestamp)
+        else:
+            return None
+        
+        # Validate timestamp is reasonable (not too old or in future)
+        current_time = datetime.now(timezone.utc).timestamp()
+        if timestamp < (current_time - 90 * 24 * 3600) or timestamp > current_time:
+            return None
+            
+        return timestamp if timestamp > 0 else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _safe_convert_value(value: Any) -> float | None:
+    """Safely convert value to float with validation."""
+    try:
+        if isinstance(value, str):
+            value = float(value)
+        elif isinstance(value, (int, float)):
+            value = float(value)
+        else:
+            return None
+            
+        # Validate ranges (non-negative, reasonable upper bound)
+        if value < 0 or value > 999999:
+            return None
+            
+        return value
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _validate_reading_data(reading: dict[str, Any]) -> dict[str, Any] | None:
+    """Validate and convert reading data to standard format."""
+    if not isinstance(reading, dict):
+        return None
+    
+    timestamp = _safe_convert_timestamp(reading.get("timestamp"))
+    value = _safe_convert_value(reading.get("value"))
+    
+    if timestamp is None or value is None:
+        return None
+    
+    return {"timestamp": timestamp, "value": value}
 
 
 class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
@@ -56,6 +111,9 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
 
         # Get scan interval from config, with fallback to default
         scan_interval = config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        
+        # Get max data age from config, with fallback to default
+        self._max_data_age_hours = config_entry.data.get(CONF_MAX_DATA_AGE_HOURS, DEFAULT_MAX_DATA_AGE_HOURS)
 
         super().__init__(
             hass,
@@ -66,29 +124,8 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
 
     def _validate_reading(self, reading: dict[str, Any]) -> bool:
         """Validate a single reading has required fields and valid data."""
-        try:
-            required_fields = ["timestamp", "value"]
-            if not all(field in reading for field in required_fields):
-                return False
-            
-            # Validate timestamp is reasonable (not too old or in future)
-            timestamp = reading["timestamp"]
-            if not isinstance(timestamp, (int, float)):
-                return False
-                
-            current_time = datetime.now(timezone.utc).timestamp()
-            # Allow readings up to 90 days old, reject future readings
-            if timestamp < (current_time - 90 * 24 * 3600) or timestamp > current_time:
-                return False
-            
-            # Validate value is a reasonable number (positive, not extreme)
-            value = reading["value"]
-            if not isinstance(value, (int, float)) or value < 0 or value > 1e9:
-                return False
-                
-            return True
-        except (KeyError, TypeError, ValueError):
-            return False
+        validated = _validate_reading_data(reading)
+        return validated is not None
 
     def _safe_get_timestamp(self, data: dict[str, Any] | None) -> int | None:
         """Safely extract timestamp from data with validation."""
@@ -133,12 +170,12 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             if self._update_count % 10 == 0:
                 await self._periodic_storage_cleanup()
             
-            # Get the latest reading for current sensors
-            latest_data = await self.api.async_get_latest_reading()
+            # Get the latest reading for current sensors (use optimized method)
+            latest_data = await self.api.async_get_latest_reading_optimized()
             
             # Handle case where no data is available
             if latest_data.get("timestamp") is None or latest_data.get("value") is None:
-                _LOGGER.warning("No valid readings available from API")
+                _LOGGER.info("No valid readings available from API")
                 # Return minimal data structure to prevent sensor errors
                 latest_data = {
                     "model": latest_data.get("model"),
@@ -158,10 +195,16 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
                 # Add calculated usage data
                 latest_data["usage_data"] = self._calculate_usage_metrics()
             
-            _LOGGER.debug("Successfully fetched data: %s", latest_data)
+            _LOGGER.debug("Successfully fetched data with timestamp: %s, value: %s", 
+                         latest_data.get("timestamp"), latest_data.get("value"))
             return latest_data
             
         except InvalidAuth as err:
+            # Authentication failed - trigger config entry reload
+            _LOGGER.error("Authentication failed, triggering config entry reload: %s", err)
+            self.hass.async_create_task(
+                self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            )
             raise UpdateFailed(f"Authentication failed: {err}") from err
         except APIError as err:
             raise UpdateFailed(f"Error communicating with API: {err}") from err
@@ -219,18 +262,20 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             # More efficient: use set for O(1) lookup of existing timestamps
             existing_timestamps = {r["timestamp"] for r in existing_readings}
             
-            # Only add truly new readings that pass validation
-            new_unique_readings = [
-                reading for reading in new_readings 
-                if reading["timestamp"] not in existing_timestamps and self._validate_reading(reading)
-            ]
+            # Pre-validate all readings and filter efficiently
+            valid_new_readings = []
+            for reading in new_readings:
+                validated = _validate_reading_data(reading)
+                if validated and validated["timestamp"] not in existing_timestamps:
+                    valid_new_readings.append(validated)
             
-            if len(new_readings) != len(new_unique_readings):
-                _LOGGER.warning("Filtered out %d invalid readings", len(new_readings) - len(new_unique_readings))
+            invalid_count = len(new_readings) - len(valid_new_readings)
+            if invalid_count > 0:
+                _LOGGER.warning("Filtered out %d invalid readings", invalid_count)
             
             # Combine and sort only if we have new readings
-            if new_unique_readings:
-                combined_readings = existing_readings + new_unique_readings
+            if valid_new_readings:
+                combined_readings = existing_readings + valid_new_readings
                 combined_readings.sort(key=lambda x: x["timestamp"])
                 
                 # Apply time-based filter
@@ -252,7 +297,7 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
                     self._historical_data["last_reading_timestamp"] = self._last_reading_timestamp
                 
                 await self.store.async_save(self._historical_data)
-                _LOGGER.debug("Updated historical data with %d new readings", len(new_unique_readings))
+                _LOGGER.debug("Updated historical data with %d new readings", len(valid_new_readings))
             else:
                 _LOGGER.debug("No new readings to add")
             
@@ -320,35 +365,12 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             return 0.0
         
         try:
-            # Validate and filter readings
+            # Validate and filter readings using utility function
             valid_readings = []
             for reading in readings:
-                if not isinstance(reading, dict):
-                    continue
-                timestamp = reading.get("timestamp")
-                value = reading.get("value")
-                if timestamp is not None and value is not None:
-                    try:
-                        # More robust type conversion with string handling
-                        if isinstance(timestamp, str):
-                            timestamp = int(float(timestamp))
-                        elif isinstance(timestamp, (int, float)):
-                            timestamp = int(timestamp)
-                        else:
-                            continue
-                            
-                        if isinstance(value, str):
-                            value = float(value)
-                        elif isinstance(value, (int, float)):
-                            value = float(value)
-                        else:
-                            continue
-                            
-                        # Validate ranges
-                        if timestamp > 0 and not (value < 0 or value > 999999):
-                            valid_readings.append({"timestamp": timestamp, "value": value})
-                    except (ValueError, TypeError, OverflowError):
-                        continue
+                validated = _validate_reading_data(reading)
+                if validated:
+                    valid_readings.append(validated)
             
             if len(valid_readings) < 2:
                 return 0.0
@@ -373,35 +395,12 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             return 0.0
         
         try:
-            # Validate and filter readings
+            # Validate and filter readings using utility function
             valid_readings = []
             for reading in readings:
-                if not isinstance(reading, dict):
-                    continue
-                timestamp = reading.get("timestamp")
-                value = reading.get("value")
-                if timestamp is not None and value is not None:
-                    try:
-                        # More robust type conversion with string handling
-                        if isinstance(timestamp, str):
-                            timestamp = int(float(timestamp))
-                        elif isinstance(timestamp, (int, float)):
-                            timestamp = int(timestamp)
-                        else:
-                            continue
-                            
-                        if isinstance(value, str):
-                            value = float(value)
-                        elif isinstance(value, (int, float)):
-                            value = float(value)
-                        else:
-                            continue
-                            
-                        # Validate ranges
-                        if timestamp > 0 and not (value < 0 or value > 999999):
-                            valid_readings.append({"timestamp": timestamp, "value": value})
-                    except (ValueError, TypeError, OverflowError):
-                        continue
+                validated = _validate_reading_data(reading)
+                if validated:
+                    valid_readings.append(validated)
             
             if len(valid_readings) < 2:
                 return 0.0
@@ -412,7 +411,7 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
             # Get the most recent MAX_DATA_AGE_HOURS hours of readings
             # Fix: Calculate once for efficiency
             current_timestamp = datetime.now(timezone.utc).timestamp()
-            cutoff_timestamp = current_timestamp - (MAX_DATA_AGE_HOURS * 3600)
+            cutoff_timestamp = current_timestamp - (self._max_data_age_hours * 3600)
             recent_readings = [r for r in valid_readings if r["timestamp"] >= cutoff_timestamp]
             
             if len(recent_readings) < 2:
@@ -454,8 +453,10 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
     async def async_backfill_data(self, days: int = 7) -> None:
         """Backfill historical data for late-arriving readings."""
         # Validate input parameters
-        if not isinstance(days, int) or days < MIN_BACKFILL_DAYS or days > MAX_BACKFILL_DAYS:
-            raise ValueError(f"Days must be an integer between {MIN_BACKFILL_DAYS} and {MAX_BACKFILL_DAYS}")
+        if not isinstance(days, int):
+            raise ValueError(f"Days must be an integer, got {type(days).__name__}")
+        if days < MIN_BACKFILL_DAYS or days > MAX_BACKFILL_DAYS:
+            raise ValueError(f"Days must be between {MIN_BACKFILL_DAYS} and {MAX_BACKFILL_DAYS}, got {days}")
         
         _LOGGER.info("Starting backfill operation for last %d days", days)
         

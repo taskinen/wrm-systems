@@ -4,6 +4,7 @@ DOMAIN = "wrm_systems"
 # Configuration
 CONF_TOKEN = "token"
 CONF_SCAN_INTERVAL = "scan_interval"
+CONF_MAX_DATA_AGE_HOURS = "max_data_age_hours"
 
 # Default values
 DEFAULT_SCAN_INTERVAL = 3600  # 1 hour in seconds
@@ -13,6 +14,9 @@ API_BASE_URL = "https://wmd.wrm-systems.fi/api/watermeter"
 
 # Data retention and staleness
 MAX_DATA_AGE_HOURS = 48
+DEFAULT_MAX_DATA_AGE_HOURS = 48
+MIN_MAX_DATA_AGE_HOURS = 6
+MAX_MAX_DATA_AGE_HOURS = 168  # 7 days
 HISTORICAL_DATA_DAYS = 30
 BACKFILL_DAYS = 7
 
@@ -33,6 +37,10 @@ RETRY_DELAY = 2
 def validate_scan_interval(interval: int) -> bool:
     """Validate scan interval is within acceptable range."""
     return isinstance(interval, int) and MIN_SCAN_INTERVAL <= interval <= MAX_SCAN_INTERVAL
+
+def validate_max_data_age_hours(hours: int) -> bool:
+    """Validate max data age hours is within acceptable range."""
+    return isinstance(hours, int) and MIN_MAX_DATA_AGE_HOURS <= hours <= MAX_MAX_DATA_AGE_HOURS
 
 def validate_historical_days(days: int) -> bool:
     """Validate historical data days is within acceptable range."""

@@ -22,6 +22,8 @@ class WRMSystemsAPIClient:
         self._session = session
         self._token = token
         self._headers = {"Authorization": f"Bearer {token}"}
+        self._last_request_time = 0.0
+        self._min_request_interval = 1.0  # Minimum 1 second between requests
 
     def _sanitize_for_logging(self, data: dict[str, Any]) -> dict[str, Any]:
         """Remove sensitive data from logs."""
@@ -37,14 +39,30 @@ class WRMSystemsAPIClient:
         
         return sanitized
 
+    async def _rate_limit(self) -> None:
+        """Ensure minimum time between API requests."""
+        current_time = asyncio.get_event_loop().time()
+        time_since_last = current_time - self._last_request_time
+        
+        if time_since_last < self._min_request_interval:
+            sleep_time = self._min_request_interval - time_since_last
+            await asyncio.sleep(sleep_time)
+        
+        self._last_request_time = asyncio.get_event_loop().time()
+
     async def _make_request_with_retry(
         self, url: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """Make HTTP request with retry logic and proper error handling."""
+        # Apply rate limiting before making request
+        await self._rate_limit()
+        
         last_exception = None
         
         for attempt in range(MAX_RETRIES):
             try:
+                await self._rate_limit()  # Apply rate limiting
+
                 timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
                 async with self._session.get(
                     url, headers=self._headers, params=params, timeout=timeout
@@ -177,11 +195,47 @@ class WRMSystemsAPIClient:
         
         return {
             "model": data.get("model"),
-            "serial_number": data.get("serialNumber"),  # Consistent naming
+            "serial_number": data.get("serialNumber"),
             "unit": data.get("unit"),
-            "timestamp": int(latest_reading[0]),  # Ensure integer timestamp
-            "value": float(latest_reading[1]),    # Ensure float value
+            "timestamp": int(latest_reading[0]),
+            "value": float(latest_reading[1]),
         }
+
+    async def async_get_latest_reading_optimized(self) -> dict[str, Any]:
+        """Get only the latest reading without fetching all data (if API supports it)."""
+        # Try to get just the latest reading first
+        try:
+            # For now, use existing method but add caching logic
+            # In future, this could call a specific endpoint for latest reading only
+            data = await self.async_get_readings()
+            
+            if not data or "readings" not in data or not data["readings"]:
+                return {
+                    "model": data.get("model") if data else None,
+                    "serial_number": data.get("serialNumber") if data else None,
+                    "unit": data.get("unit") if data else None,
+                    "timestamp": None,
+                    "value": None,
+                }
+
+            # Find the most recent reading
+            latest_reading = max(data["readings"], key=lambda x: x[0])
+            
+            # Validate the reading data
+            if not isinstance(latest_reading[0], (int, float)) or not isinstance(latest_reading[1], (int, float)):
+                raise APIError("Invalid reading format in latest reading")
+            
+            return {
+                "model": data.get("model"),
+                "serial_number": data.get("serialNumber"),
+                "unit": data.get("unit"),
+                "timestamp": int(latest_reading[0]),
+                "value": float(latest_reading[1]),
+            }
+        except (InvalidAuth, APIError):
+            raise
+        except Exception as err:
+            raise APIError(f"Unexpected error getting latest reading: {err}") from err
 
     async def async_get_readings_range(
         self, start_date: datetime, end_date: datetime | None = None

@@ -16,7 +16,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MAX_DATA_AGE_HOURS
+from .const import DOMAIN
 from .coordinator import WRMSystemsDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ class WRMSystemsBaseSensor(CoordinatorEntity, SensorEntity):
             # Use consistent timezone-aware timestamp comparison
             current_timestamp = datetime.now(timezone.utc).timestamp()
             data_age_hours = (current_timestamp - timestamp) / 3600
-            return data_age_hours <= MAX_DATA_AGE_HOURS
+            return data_age_hours <= self.coordinator._max_data_age_hours
         except (KeyError, TypeError, ValueError) as err:
             _LOGGER.debug("Error checking availability: %s", err)
             return False
