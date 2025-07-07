@@ -55,7 +55,7 @@ class WRMSystemsWaterMeterSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = "Water Meter Reading"
         self._attr_unique_id = f"{config_entry.entry_id}_water_meter"
         self._attr_device_class = SensorDeviceClass.WATER
-        self._attr_state_class = SensorStateClass.MEASUREMENT_INCREASING
+        self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
         self._attr_suggested_display_precision = 3
 
@@ -159,6 +159,24 @@ class WRMSystemsUsageBaseSensor(CoordinatorEntity, SensorEntity):
             return None
         
         return usage_data.get(self._usage_key, 0.0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional state attributes."""
+        if self.coordinator.data is None:
+            return {}
+        
+        usage_data = self.coordinator.data.get("usage_data", {})
+        attributes = {
+            "usage_period": self._usage_key.replace("_", " ").title(),
+            "last_updated": self.coordinator.data.get("timestamp"),
+        }
+        
+        # Add data freshness information
+        if "data_age_hours" in usage_data:
+            attributes["data_age_hours"] = round(usage_data["data_age_hours"], 1)
+            
+        return attributes
 
     @property
     def device_info(self) -> dict[str, Any]:

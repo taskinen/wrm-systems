@@ -40,11 +40,13 @@ Contact WRM-Systems to obtain your API authentication token for accessing the wa
 
 ## Sensors
 
-The integration provides three sensors:
+The integration provides five sensors:
 
 - **Water Meter Reading**: Current cumulative water consumption (m³)
 - **Hourly Water Usage**: Water consumption in the current hour (m³)
 - **Daily Water Usage**: Water consumption today (m³)
+- **Weekly Water Usage**: Water consumption this week (m³)
+- **Monthly Water Usage**: Water consumption this month (m³)
 
 ## API Information
 
