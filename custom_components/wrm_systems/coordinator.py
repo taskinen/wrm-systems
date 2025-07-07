@@ -1,6 +1,7 @@
 """DataUpdateCoordinator for WRM-Systems integration."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -19,6 +20,7 @@ from .const import (
     MAX_DATA_AGE_HOURS,
     HISTORICAL_DATA_DAYS,
     BACKFILL_DAYS,
+    MAX_HISTORICAL_READINGS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -46,6 +48,7 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         self.store = Store(hass, STORAGE_VERSION, storage_key)
         self._historical_data: dict[str, Any] = {}
         self._last_reading_timestamp: int | None = None
+        self._storage_lock = asyncio.Lock()
 
         super().__init__(
             hass,
@@ -124,32 +127,33 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         if not new_readings:
             return
         
-        # Add new readings to historical data
-        existing_readings = self._historical_data.get("readings", [])
-        all_readings = existing_readings + new_readings
-        
-        # Remove duplicates and sort by timestamp
-        unique_readings = {r["timestamp"]: r for r in all_readings}
-        sorted_readings = sorted(unique_readings.values(), key=lambda x: x["timestamp"])
-        
-        # Keep only last N days of data
-        cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
-        recent_readings = [r for r in sorted_readings if r["timestamp"] >= cutoff_timestamp]
-        
-        # Add maximum reading count limit to prevent excessive memory usage
-        MAX_READINGS = 1000  # Limit to prevent memory issues
-        if len(recent_readings) > MAX_READINGS:
-            recent_readings = recent_readings[-MAX_READINGS:]
-            _LOGGER.info("Trimmed historical data to %d readings to manage memory usage", MAX_READINGS)
-        
-        # Update historical data
-        self._historical_data["readings"] = recent_readings
-        self._last_reading_timestamp = max(r["timestamp"] for r in recent_readings)
-        self._historical_data["last_reading_timestamp"] = self._last_reading_timestamp
-        
-        # Save to storage
-        await self.store.async_save(self._historical_data)
-        _LOGGER.debug("Updated historical data with %d readings", len(recent_readings))
+        # Add async lock to prevent race conditions
+        async with self._storage_lock:
+            # Add new readings to historical data
+            existing_readings = self._historical_data.get("readings", [])
+            all_readings = existing_readings + new_readings
+            
+            # Remove duplicates and sort by timestamp
+            unique_readings = {r["timestamp"]: r for r in all_readings}
+            sorted_readings = sorted(unique_readings.values(), key=lambda x: x["timestamp"])
+            
+            # Keep only last N days of data
+            cutoff_timestamp = int((datetime.now(timezone.utc) - timedelta(days=HISTORICAL_DATA_DAYS)).timestamp())
+            recent_readings = [r for r in sorted_readings if r["timestamp"] >= cutoff_timestamp]
+            
+            # Add maximum reading count limit to prevent excessive memory usage
+            if len(recent_readings) > MAX_HISTORICAL_READINGS:
+                recent_readings = recent_readings[-MAX_HISTORICAL_READINGS:]
+                _LOGGER.info("Trimmed historical data to %d readings to manage memory usage", MAX_HISTORICAL_READINGS)
+            
+            # Update historical data
+            self._historical_data["readings"] = recent_readings
+            self._last_reading_timestamp = max(r["timestamp"] for r in recent_readings)
+            self._historical_data["last_reading_timestamp"] = self._last_reading_timestamp
+            
+            # Save to storage
+            await self.store.async_save(self._historical_data)
+            _LOGGER.debug("Updated historical data with %d readings", len(recent_readings))
     
     def _calculate_usage_metrics(self) -> dict[str, Any]:
         """Calculate usage metrics from historical data."""
@@ -205,7 +209,7 @@ class WRMSystemsDataUpdateCoordinator(DataUpdateCoordinator):
         
         try:
             # Sort by timestamp and validate data
-            sorted_readings = sorted(readings, key=lambda x: x.get("timestamp", 0))
+            sorted_readings: list[dict[str, Any]] = sorted(readings, key=lambda x: x.get("timestamp", 0))
             
             # Filter out invalid readings
             valid_readings = [

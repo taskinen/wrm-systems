@@ -9,14 +9,9 @@ from typing import Any
 import aiohttp
 from aiohttp import ClientSession
 
-from .const import API_BASE_URL
+from .const import API_BASE_URL, MAX_RETRIES, RETRY_DELAY, REQUEST_TIMEOUT
 
 _LOGGER = logging.getLogger(__name__)
-
-# Retry configuration
-MAX_RETRIES = 3
-RETRY_DELAY = 2  # seconds
-REQUEST_TIMEOUT = 30  # seconds
 
 
 class WRMSystemsAPIClient:
@@ -42,8 +37,14 @@ class WRMSystemsAPIClient:
                 ) as response:
                     if response.status == 401:
                         raise InvalidAuth("Invalid authentication token")
+                    elif response.status == 429:
+                        # Add rate limiting handling
+                        wait_time = RETRY_DELAY * (2 ** attempt)
+                        _LOGGER.warning("Rate limited, waiting %d seconds", wait_time)
+                        await asyncio.sleep(wait_time)
+                        continue
                     elif response.status != 200:
-                        raise APIError(f"API returned status {response.status}")
+                        raise APIError(f"API returned status {response.status}: {await response.text()}")
 
                     try:
                         data = await response.json()

@@ -58,6 +58,9 @@ class WRMSystemsWaterMeterSensor(CoordinatorEntity, SensorEntity):
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
         self._attr_suggested_display_precision = 3
+        # Add entity registry support
+        self._attr_has_entity_name = True
+        self._attr_entity_registry_enabled_default = True
 
     @property
     def available(self) -> bool:
@@ -108,8 +111,11 @@ class WRMSystemsWaterMeterSensor(CoordinatorEntity, SensorEntity):
             "identifiers": {(DOMAIN, self._config_entry.entry_id)},
             "name": "WRM-Systems Water Meter",
             "manufacturer": "WRM-Systems",
-            "model": self.coordinator.data.get("model") if self.coordinator.data else None,
+            "model": self.coordinator.data.get("model") if self.coordinator.data else "Unknown",
             "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
+            "sw_version": "1.0.0",
+            "hw_version": None,
+            "configuration_url": "https://wmd.wrm-systems.fi",
         }
 
 
@@ -134,6 +140,9 @@ class WRMSystemsUsageBaseSensor(CoordinatorEntity, SensorEntity):
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
         self._attr_suggested_display_precision = 3
+        # Add entity registry support
+        self._attr_has_entity_name = True
+        self._attr_entity_registry_enabled_default = True
 
     @property
     def available(self) -> bool:
@@ -187,8 +196,11 @@ class WRMSystemsUsageBaseSensor(CoordinatorEntity, SensorEntity):
             "identifiers": {(DOMAIN, self._config_entry.entry_id)},
             "name": "WRM-Systems Water Meter",
             "manufacturer": "WRM-Systems",
-            "model": self.coordinator.data.get("model") if self.coordinator.data else None,
+            "model": self.coordinator.data.get("model") if self.coordinator.data else "Unknown",
             "serial_number": self.coordinator.data.get("serial_number") if self.coordinator.data else None,
+            "sw_version": "1.0.0",
+            "hw_version": None,
+            "configuration_url": "https://wmd.wrm-systems.fi",
         }
 
 

@@ -15,3 +15,9 @@ API_BASE_URL = "https://wmd.wrm-systems.fi/api/watermeter"
 MAX_DATA_AGE_HOURS = 48
 HISTORICAL_DATA_DAYS = 30
 BACKFILL_DAYS = 7
+
+# API request configuration
+MAX_HISTORICAL_READINGS = 1000
+REQUEST_TIMEOUT = 30
+MAX_RETRIES = 3
+RETRY_DELAY = 2
